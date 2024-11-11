@@ -130,3 +130,16 @@ test "comments" {
 
     try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
+
+fn testParse(alloc: std.mem.Allocator, src: []const u8) !void {
+    var result = try edn.parseFromSlice(alloc, src);
+    defer result.deinit(alloc);
+}
+
+test "allocation failures" {
+    const f = try std.fs.cwd().openFile("examples/edn.edn", .{});
+    defer f.close();
+    const src = try f.readToEndAlloc(talloc, 100000);
+    defer talloc.free(src);
+    try testing.checkAllAllocationFailures(talloc, testParse, .{src});
+}

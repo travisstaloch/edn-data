@@ -24,7 +24,9 @@ pub fn init(alloc: Allocator, src: []const u8) Parser {
 
 pub fn deinit(p: *Parser) void {
     for (p.top_level_values.items) |vi| {
+        if (p.values.items.len > vi.index) {
             p.values.items[vi.index].deinit(p.alloc, p.values.items);
+        }
     }
     p.values.deinit(p.alloc);
     p.top_level_values.deinit(p.alloc);
