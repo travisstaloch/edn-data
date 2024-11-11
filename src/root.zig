@@ -53,8 +53,8 @@ pub const ValueIndexList = std.ArrayListUnmanaged(ValueIndex);
 pub fn Map(V: type) type {
     return std.ArrayHashMapUnmanaged(ValueIndex, V, MapContext, true);
 }
-pub const ValueIndexSet = Map(void);
-pub const ValueIndexMap = Map(ValueIndex);
+pub const ValueIndexSet = []ValueIndex;
+pub const ValueIndexMap = struct { keys: []ValueIndex, values: []ValueIndex };
 
 pub const Value = union(Value.Tag) {
     nil,
@@ -68,11 +68,6 @@ pub const Value = union(Value.Tag) {
     float: Token,
     list: []ValueIndex,
     vector: []ValueIndex,
-    // TODO Map, Set should become [][2]ValueIndex, []ValueIndex.
-    // This will require a way to compare them as Comparable currently relies on
-    // getContext().
-    // Would be straightforward if there were a way to statically init them from
-    // keys/values.
     map: ValueIndexMap,
     set: ValueIndexSet,
 
@@ -108,61 +103,29 @@ pub const Value = union(Value.Tag) {
                 for (l) |*item| values[item.index].deinit(alloc, values);
                 alloc.free(l);
             },
-            .map => |*m| {
-                for (m.keys(), m.values()) |k, v| {
-                    values[k.index].deinit(alloc, values);
-                    values[v.index].deinit(alloc, values);
-                }
-                m.deinit(alloc);
+            .map => |m| {
+                deinitMap(alloc, m.keys, m.values, values);
+                alloc.free(m.keys);
+                alloc.free(m.values);
             },
-            .set => |*s| {
-                for (s.keys()) |k| values[k.index].deinit(alloc, values);
-                s.deinit(alloc);
+            .set => |s| {
+                deinitSet(alloc, s, values);
+                alloc.free(s);
             },
         }
     }
 
-    pub fn comparable(v: Value, src: []const u8, values: []const Value) Comparable {
-        return .{ .value = v, .src = src, .values = values };
-    }
-
-    const Comparable = struct {
-        value: Value,
-        src: []const u8,
-        values: []const Value,
-
-        pub fn eql(a: Comparable, b: Comparable) bool {
-            const atag = std.meta.activeTag(a.value);
-            const btag = std.meta.activeTag(b.value);
-            return atag == btag and switch (a.value) {
-                .nil, .true, .false => true,
-                .integer => a.value.integer == b.value.integer,
-                inline .float, .keyword, .symbol, .string => |payload, tag| blk: {
-                    break :blk mem.eql(
-                        u8,
-                        payload.src(a.src),
-                        @field(b.value, @tagName(tag)).src(b.src),
-                    );
-                },
-                inline .vector, .list => |payload, tag| for (payload, @field(b.value, @tagName(tag))) |aa, bb| {
-                    const acmp = a.values[aa.index].comparable(a.src, a.values);
-                    const bcmp = b.values[bb.index].comparable(b.src, b.values);
-                    if (!acmp.eql(bcmp)) return false;
-                } else true,
-                .character => |c| c == b.value.character,
-                .map => |m| for (m.keys(), m.values()) |k, v| {
-                    const bval = b.value.map.getContext(k, .{ .src = b.src, .values = b.values }) orelse return false;
-                    const acmp = a.values[v.index].comparable(a.src, a.values);
-                    const bcmp = b.values[bval.index].comparable(b.src, b.values);
-                    if (!acmp.eql(bcmp)) return false;
-                } else true,
-                .set => |s| for (s.keys()) |k| {
-                    _ = b.value.set.getContext(k, .{ .src = a.src, .values = a.values }) orelse return false;
-                } else true,
-                // else => std.debug.panic("TODO {s}", .{@tagName(a)}),
-            };
+    fn deinitMap(alloc: Allocator, ks: []ValueIndex, vs: []ValueIndex, values: []Value) void {
+        for (ks, vs) |k, v| {
+            values[k.index].deinit(alloc, values);
+            values[v.index].deinit(alloc, values);
         }
-    };
+    }
+    fn deinitSet(alloc: Allocator, ks: []ValueIndex, values: []Value) void {
+        for (ks) |k| {
+            values[k.index].deinit(alloc, values);
+        }
+    }
 };
 
 pub const MapContext = struct {
@@ -181,15 +144,15 @@ pub const MapContext = struct {
                 for (l) |i| self.hashTo(i, hptr);
             },
             .map => |m| {
-                hptr.update(mem.asBytes(&m.count()));
-                for (m.keys(), m.values()) |k, subv| {
+                hptr.update(mem.asBytes(&m.keys.len));
+                for (m.keys, m.values) |k, subv| {
                     self.hashTo(k, hptr);
                     self.hashTo(subv, hptr);
                 }
             },
             .set => |s| {
-                hptr.update(mem.asBytes(&s.count()));
-                for (s.keys()) |k| self.hashTo(k, hptr);
+                hptr.update(mem.asBytes(&s.len));
+                for (s) |k| self.hashTo(k, hptr);
             },
             // else => std.debug.panic("TODO {s}", .{@tagName(v)}),
         }
@@ -201,11 +164,8 @@ pub const MapContext = struct {
         return @truncate(h.final());
     }
 
-    pub fn eql(self: MapContext, avi: ValueIndex, bvi: ValueIndex, b_index: usize) bool {
-        _ = b_index;
-        const a = self.values[avi.index];
-        const b = self.values[bvi.index];
-        return a.comparable(self.src, self.values).eql(b.comparable(self.src, self.values));
+    pub fn eql(_: MapContext, _: ValueIndex, _: ValueIndex, _: usize) bool {
+        unreachable;
     }
 };
 
@@ -280,7 +240,6 @@ fn formatValue(
     writer: anytype,
 ) !void {
     const v = data.parse_result.values[data.value.index];
-    // log.debug("formatValue() {s}", .{@tagName(v)});
     try writer.writeAll(data.value.leading_ws.src(data.src));
 
     switch (v) {
@@ -312,13 +271,13 @@ fn formatValue(
             }
         },
         .map => |m| {
-            for (m.keys(), m.values()) |k, sv| {
+            for (m.keys, m.values) |k, sv| {
                 try std.fmt.formatType(fmtValue(k, data.src, data.parse_result), fmt, options, writer, 0);
                 try std.fmt.formatType(fmtValue(sv, data.src, data.parse_result), fmt, options, writer, 0);
             }
         },
-        .set => |s| {
-            for (s.keys()) |k| {
+        .set => |keys| {
+            for (keys) |k| {
                 try std.fmt.formatType(fmtValue(k, data.src, data.parse_result), fmt, options, writer, 0);
             }
         },
@@ -490,8 +449,10 @@ fn parseMap(p: *Parser) ParseError!Value {
     assert(p.peek(0) == '{');
     p.index += 1;
 
-    var result: Value = .{ .map = .{} };
-    errdefer result.deinit(p.alloc, p.values.items);
+    var result = Map(ValueIndex){};
+    defer result.deinit(p.alloc);
+    errdefer Value.deinitMap(p.alloc, result.keys(), result.values(), p.values.items);
+
     while (true) {
         const peek = p.peek(0) orelse return error.Eof;
         log.debug("{s: <[1]}parseMap '{2?c}'", .{ "", p.depth * 2, peek });
@@ -501,7 +462,7 @@ fn parseMap(p: *Parser) ParseError!Value {
             var key, const key_vi = try parseValue(p);
             errdefer key.deinit(p.alloc, p.values.items);
             try p.values.append(p.alloc, key);
-            const gop = try result.map.getOrPutContext(p.alloc, key_vi, .{
+            const gop = try result.getOrPutContext(p.alloc, key_vi, .{
                 .src = p.src,
                 .values = p.values.items,
             });
@@ -514,8 +475,12 @@ fn parseMap(p: *Parser) ParseError!Value {
         gop.value_ptr.* = value_vi;
         try p.values.append(p.alloc, value);
     }
-
-    return result;
+    const keys = try p.alloc.dupe(ValueIndex, result.keys());
+    errdefer p.alloc.free(keys);
+    return .{ .map = .{
+        .keys = keys,
+        .values = try p.alloc.dupe(ValueIndex, result.values()),
+    } };
 }
 
 fn parseSet(p: *Parser) ParseError!Value {
@@ -525,8 +490,10 @@ fn parseSet(p: *Parser) ParseError!Value {
     assert(p.peek(0) == '#' and p.peek(1) == '{');
     p.index += 2;
 
-    var result: Value = .{ .set = .{} };
-    errdefer result.deinit(p.alloc, p.values.items);
+    var result = Map(void){};
+    defer result.deinit(p.alloc);
+    errdefer Value.deinitSet(p.alloc, result.keys(), p.values.items);
+
     while (true) {
         const peek = p.peek(0) orelse return error.Eof;
         log.debug("{s: <[1]}parseSet '{2?c}'", .{ "", p.depth * 2, peek });
@@ -535,13 +502,13 @@ fn parseSet(p: *Parser) ParseError!Value {
         var v, const vi = try parseValue(p);
         errdefer v.deinit(p.alloc, p.values.items);
         try p.values.append(p.alloc, v);
-        const gop = try result.set.getOrPutContext(p.alloc, vi, .{
+        const gop = try result.getOrPutContext(p.alloc, vi, .{
             .src = p.src,
             .values = p.values.items,
         });
         if (gop.found_existing) return error.SetDuplicateKey;
     }
-    return result;
+    return .{ .set = try p.alloc.dupe(ValueIndex, result.keys()) };
 }
 
 // TODO
