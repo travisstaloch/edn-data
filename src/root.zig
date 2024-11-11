@@ -126,33 +126,75 @@ pub const Value = union(Value.Tag) {
             values[k.index].deinit(alloc, values);
         }
     }
+    pub fn eql(
+        a: Value,
+        a_src: []const u8,
+        a_values: []Value,
+        b: Value,
+        b_src: []const u8,
+        b_values: []Value,
+    ) bool {
+        return a == std.meta.activeTag(b) and
+            switch (a) {
+            .nil, .true, .false => true,
+            .integer => a.integer == b.integer,
+            inline .float, .keyword, .symbol, .string => |payload, tag| mem.eql(
+                u8,
+                payload.src(a_src),
+                @field(b, @tagName(tag)).src(b_src),
+            ),
+            inline .vector, .list => |payload, tag| for (payload, @field(b, @tagName(tag))) |aa, bb| {
+                const aval = a_values[aa.index];
+                const bval = b_values[bb.index];
+                if (!aval.eql(a_src, a_values, bval, b_src, b_values)) return false;
+            } else true,
+            .character => |c| c == b.character,
+            // TODO hashing doesn't guarantee uniqueness
+            inline .map, .set => blk: {
+                const actx = MapContext{ .src = a_src, .values = a_values };
+                const ahash = actx.hashValue(a);
+                const bctx = MapContext{ .src = b_src, .values = b_values };
+                const bhash = bctx.hashValue(b);
+                break :blk ahash == bhash;
+            },
+            // else => std.debug.panic("TODO {s}", .{@tagName(a)}),
+        };
+    }
 };
 
 pub const MapContext = struct {
     src: []const u8,
     values: []const Value,
 
-    pub fn hashTo(self: MapContext, vi: ValueIndex, hptr: anytype) void {
-        const v = self.values[vi.index];
+    fn hashByIndex(self: MapContext, vi: ValueIndex, hptr: anytype) void {
+        self.hashByValue(self.values[vi.index], hptr);
+    }
+
+    fn hashByValue(self: MapContext, v: Value, hptr: anytype) void {
         hptr.update(mem.asBytes(&@intFromEnum(v)));
         switch (v) {
             .nil, .true, .false => {},
-            inline .character, .integer => hptr.update(mem.asBytes(&v.integer)),
+            .character, .integer => |p| hptr.update(mem.asBytes(&p)),
             .float, .keyword, .symbol, .string => |token| hptr.update(token.src(self.src)),
             .vector, .list => |l| {
                 hptr.update(mem.asBytes(&l.len));
-                for (l) |i| self.hashTo(i, hptr);
+                for (l) |i| self.hashByIndex(i, hptr);
             },
-            .map => |m| {
-                hptr.update(mem.asBytes(&m.keys.len));
-                for (m.keys, m.values) |k, subv| {
-                    self.hashTo(k, hptr);
-                    self.hashTo(subv, hptr);
+            // maps are equal if they have the same number of entries, and for
+            // every key/value entry in one map an equal key is present and
+            // mapped to an equal value in the other.
+            .map => |map| {
+                hptr.update(mem.asBytes(&map.keys.len));
+                for (map.keys, map.values) |k, subv| {
+                    self.hashByIndex(k, hptr);
+                    self.hashByIndex(subv, hptr);
                 }
             },
-            .set => |s| {
-                hptr.update(mem.asBytes(&s.len));
-                for (s) |k| self.hashTo(k, hptr);
+            // sets are equal if they have the same count of elements and, for
+            // every element in one set, an equal element is in the other.
+            .set => |keys| {
+                hptr.update(mem.asBytes(&keys.len));
+                for (keys) |k| self.hashByIndex(k, hptr);
             },
             // else => std.debug.panic("TODO {s}", .{@tagName(v)}),
         }
@@ -160,7 +202,13 @@ pub const MapContext = struct {
 
     pub fn hash(self: MapContext, v: ValueIndex) u32 {
         var h = std.hash.Wyhash.init(0);
-        self.hashTo(v, &h);
+        self.hashByIndex(v, &h);
+        return @truncate(h.final());
+    }
+
+    pub fn hashValue(self: MapContext, v: Value) u32 {
+        var h = std.hash.Wyhash.init(0);
+        self.hashByValue(v, &h);
         return @truncate(h.final());
     }
 
@@ -253,33 +301,19 @@ fn formatValue(
         .float,
         => |t| try writer.writeAll(t.src(data.src)),
         .character => |c| try writer.print("\\{u}", .{c}),
-        .integer => |x| try writer.print("{}", .{x}),
-        .list => |l| {
-            for (l) |item| {
-                try std.fmt.formatType(
-                    fmtValue(item, data.src, data.parse_result),
-                    fmt,
-                    options,
-                    writer,
-                    0,
-                );
-            }
+        .integer => |x| try std.fmt.formatType(x, fmt, options, writer, 0),
+        .list => |l| for (l) |item| {
+            try std.fmt.formatType(fmtValue(item, data.src, data.parse_result), fmt, options, writer, 0);
         },
-        .vector => |l| {
-            for (l) |item| {
-                try std.fmt.formatType(fmtValue(item, data.src, data.parse_result), fmt, options, writer, 0);
-            }
+        .vector => |l| for (l) |item| {
+            try std.fmt.formatType(fmtValue(item, data.src, data.parse_result), fmt, options, writer, 0);
         },
-        .map => |m| {
-            for (m.keys, m.values) |k, sv| {
-                try std.fmt.formatType(fmtValue(k, data.src, data.parse_result), fmt, options, writer, 0);
-                try std.fmt.formatType(fmtValue(sv, data.src, data.parse_result), fmt, options, writer, 0);
-            }
+        .map => |m| for (m.keys, m.values) |k, sv| {
+            try std.fmt.formatType(fmtValue(k, data.src, data.parse_result), fmt, options, writer, 0);
+            try std.fmt.formatType(fmtValue(sv, data.src, data.parse_result), fmt, options, writer, 0);
         },
-        .set => |keys| {
-            for (keys) |k| {
-                try std.fmt.formatType(fmtValue(k, data.src, data.parse_result), fmt, options, writer, 0);
-            }
+        .set => |keys| for (keys) |k| {
+            try std.fmt.formatType(fmtValue(k, data.src, data.parse_result), fmt, options, writer, 0);
         },
     }
 
