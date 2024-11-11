@@ -6,8 +6,8 @@
     - [x] get rid of set/map equality dependency on map.getContext()
     - [x] implement Value.eql()
 - [ ] parse mode which doesn't allocate, only returning required lengths
-- [ ] parse mode which ignores whitespace and comments.
-  - [ ] move whitespace/comments into its own list
+- [x] parse mode which ignores whitespace and comments.
+  - [x] move whitespace/comments into its own list
 - [ ] maybe support parsing at comptime
 
 # references

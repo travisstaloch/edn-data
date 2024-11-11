@@ -9,16 +9,19 @@ index: u32,
 alloc: Allocator,
 values: std.ArrayListUnmanaged(edn.Value) = .{},
 top_level_values: edn.ValueIndexList = .{},
+whitespace: std.ArrayListUnmanaged([2]edn.Token) = .{},
+options: edn.Options,
 depth: u8, // only used when logging
 
 const Parser = @This();
 
-pub fn init(alloc: Allocator, src: []const u8) Parser {
+pub fn init(alloc: Allocator, src: []const u8, options: edn.Options) Parser {
     return .{
         .src = src,
         .index = 0,
         .alloc = alloc,
         .depth = 0,
+        .options = options,
     };
 }
 
@@ -30,6 +33,7 @@ pub fn deinit(p: *Parser) void {
     }
     p.values.deinit(p.alloc);
     p.top_level_values.deinit(p.alloc);
+    p.whitespace.deinit(p.alloc);
 }
 
 pub fn isIntOrFloatDigit(c: u8) bool {

@@ -41,11 +41,9 @@ pub const Token = struct {
 pub const ValueIndex = struct {
     /// index into values
     index: u32,
-    leading_ws: Token,
-    trailing_ws: Token,
 
-    pub fn init(index: u32, leading_ws: Token, trailing_ws: Token) ValueIndex {
-        return .{ .index = index, .leading_ws = leading_ws, .trailing_ws = trailing_ws };
+    pub fn init(index: u32) ValueIndex {
+        return .{ .index = index };
     }
 };
 
@@ -220,24 +218,33 @@ pub const MapContext = struct {
 pub const ParseResult = struct {
     values: []Value,
     top_level_values: []ValueIndex,
+    whitespace: [][2]Token,
 
     pub fn deinit(r: *ParseResult, alloc: Allocator) void {
         for (r.top_level_values) |v| r.values[v.index].deinit(alloc, r.values);
         alloc.free(r.values);
         alloc.free(r.top_level_values);
+        alloc.free(r.whitespace);
     }
+};
+
+pub const Options = packed struct(u8) {
+    whitespace: enum(u1) { include, exclude } = .include,
+    _padding: u7 = undefined,
 };
 
 pub fn parseFromSlice(
     alloc: Allocator,
     contents: []const u8,
+    options: Options,
 ) !ParseResult {
-    var p: Parser = .init(alloc, contents);
+    var p: Parser = .init(alloc, contents, options);
     errdefer p.deinit();
     try parseValues(&p);
     return .{
         .values = try p.values.toOwnedSlice(alloc),
         .top_level_values = try p.top_level_values.toOwnedSlice(alloc),
+        .whitespace = try p.whitespace.toOwnedSlice(alloc),
     };
 }
 
@@ -288,7 +295,8 @@ fn formatValue(
     writer: anytype,
 ) !void {
     const v = data.parse_result.values[data.value.index];
-    try writer.writeAll(data.value.leading_ws.src(data.src));
+    if (data.value.index < data.parse_result.whitespace.len)
+        try writer.writeAll(data.parse_result.whitespace[data.value.index][0].src(data.src));
 
     switch (v) {
         .true,
@@ -317,7 +325,8 @@ fn formatValue(
         },
     }
 
-    try writer.writeAll(data.value.trailing_ws.src(data.src));
+    if (data.value.index < data.parse_result.whitespace.len)
+        try writer.writeAll(data.parse_result.whitespace[data.value.index][1].src(data.src));
 }
 
 fn err(_: *const Parser, comptime fmt: []const u8, args: anytype) ParseError {
@@ -585,7 +594,11 @@ fn parseValue(p: *Parser) !struct { Value, ValueIndex } {
     p.index += is_container;
     p.skipWsAndComments();
     trailing_ws.end = p.index;
-    const vi = ValueIndex.init(@intCast(p.values.items.len), leading_ws, trailing_ws);
+    if (p.options.whitespace == .include) {
+        try p.whitespace.append(p.alloc, .{ leading_ws, trailing_ws });
+    }
+
+    const vi = ValueIndex.init(@intCast(p.values.items.len));
     log.debug(
         "{s: <[1]}parseValue() leadingws '{2s}' trailingws '{3s}'",
         .{ "", p.depth * 2, leading_ws.src(p.src), trailing_ws.src(p.src) },

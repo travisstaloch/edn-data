@@ -5,7 +5,7 @@ const talloc = testing.allocator;
 const edn = @import("extensible-data-notation");
 
 fn expectTag(src: []const u8, tag: edn.Value.Tag) !void {
-    var res = try edn.parseFromSlice(talloc, src);
+    var res = try edn.parseFromSlice(talloc, src, .{});
     defer res.deinit(talloc);
     try testing.expectEqual(1, res.top_level_values.len);
     const tlv = res.top_level_values[0];
@@ -34,7 +34,7 @@ test "map" {
         \\; You're not restricted to using keywords as keys
         \\
     ;
-    var result = try edn.parseFromSlice(talloc, src);
+    var result = try edn.parseFromSlice(talloc, src, .{});
     defer result.deinit(talloc);
     try testing.expectEqual(7, result.values.len);
     try testing.expectEqual(.keyword, std.meta.activeTag(result.values[0]));
@@ -54,7 +54,7 @@ test "list" {
         \\  MenuItem
         \\  [name rating])
     ;
-    var result = try edn.parseFromSlice(talloc, src);
+    var result = try edn.parseFromSlice(talloc, src, .{});
     defer result.deinit(talloc);
     try testing.expectEqual(6, result.values.len);
     try testing.expectEqual(.symbol, std.meta.activeTag(result.values[0]));
@@ -65,47 +65,55 @@ test "list" {
     try testing.expectEqual(.list, std.meta.activeTag(result.values[5]));
 
     try testing.expectEqual(1, result.top_level_values.len);
-    try testing.expectEqualStrings("(", result.top_level_values[0].leading_ws.src(src));
-    try testing.expectEqualStrings(")", result.top_level_values[0].trailing_ws.src(src));
+    const list = result.top_level_values[0];
+    try testing.expectEqualStrings("(", result.whitespace[list.index][0].src(src));
+    try testing.expectEqualStrings(")", result.whitespace[list.index][1].src(src));
 
     try testing.expectEqual(3, result.values[5].list.len);
-    try testing.expectEqualStrings("", result.values[5].list[0].leading_ws.src(src));
-    try testing.expectEqualStrings("\n  ", result.values[5].list[0].trailing_ws.src(src));
-    try testing.expectEqualStrings("", result.values[5].list[1].leading_ws.src(src));
-    try testing.expectEqualStrings("\n  ", result.values[5].list[1].trailing_ws.src(src));
-    try testing.expectEqual(.vector, std.meta.activeTag(result.values[result.values[5].list[2].index]));
-    try testing.expectEqualStrings("[", result.values[5].list[2].leading_ws.src(src));
-    try testing.expectEqualStrings("]", result.values[5].list[2].trailing_ws.src(src));
+    const list0 = result.values[5].list[0];
+    try testing.expectEqualStrings("", result.whitespace[list0.index][0].src(src));
+    try testing.expectEqualStrings("\n  ", result.whitespace[list0.index][1].src(src));
+    const list1 = result.values[5].list[1];
+    try testing.expectEqualStrings("", result.whitespace[list1.index][0].src(src));
+    try testing.expectEqualStrings("\n  ", result.whitespace[list1.index][1].src(src));
+    const list2 = result.values[5].list[2];
+    try testing.expectEqual(.vector, std.meta.activeTag(result.values[list2.index]));
+    try testing.expectEqualStrings("[", result.whitespace[list2.index][0].src(src));
+    try testing.expectEqualStrings("]", result.whitespace[list2.index][1].src(src));
 
     try testing.expectEqual(2, result.values[4].vector.len);
-    try testing.expectEqualStrings("", result.values[4].vector[0].leading_ws.src(src));
-    try testing.expectEqualStrings(" ", result.values[4].vector[0].trailing_ws.src(src));
-    try testing.expectEqualStrings("", result.values[4].vector[1].leading_ws.src(src));
-    try testing.expectEqualStrings("", result.values[4].vector[1].trailing_ws.src(src));
+    const vec0 = result.values[4].vector[0];
+    try testing.expectEqualStrings("", result.whitespace[vec0.index][0].src(src));
+    try testing.expectEqualStrings(" ", result.whitespace[vec0.index][1].src(src));
+    const vec1 = result.values[4].vector[1];
+    try testing.expectEqualStrings("", result.whitespace[vec1.index][0].src(src));
+    try testing.expectEqualStrings("", result.whitespace[vec1.index][1].src(src));
 
     try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
 
 test "nested list" {
     const src = " ( [] {} ) ";
-    var result = try edn.parseFromSlice(talloc, src);
+    var result = try edn.parseFromSlice(talloc, src, .{});
     defer result.deinit(talloc);
 
     try testing.expectEqual(1, result.top_level_values.len);
-    try testing.expectEqual(.list, std.meta.activeTag(result.values[result.top_level_values[0].index]));
-    try testing.expectEqualStrings(" (", result.top_level_values[0].leading_ws.src(src));
-    try testing.expectEqualStrings(") ", result.top_level_values[0].trailing_ws.src(src));
+    const list_vi = result.top_level_values[0];
+    try testing.expectEqual(.list, std.meta.activeTag(result.values[list_vi.index]));
+    try testing.expectEqualStrings(" (", result.whitespace[list_vi.index][0].src(src));
+    try testing.expectEqualStrings(") ", result.whitespace[list_vi.index][1].src(src));
 
     try testing.expectEqual(3, result.values.len);
     try testing.expectEqual(.vector, std.meta.activeTag(result.values[0]));
     try testing.expectEqual(.map, std.meta.activeTag(result.values[1]));
     try testing.expectEqual(.list, std.meta.activeTag(result.values[2]));
     try testing.expectEqual(2, result.values[2].list.len);
-    try testing.expectEqualStrings(" [", result.values[2].list[0].leading_ws.src(src));
-    try testing.expectEqualStrings("] ", result.values[2].list[0].trailing_ws.src(src));
-    try testing.expectEqualStrings("{", result.values[2].list[1].leading_ws.src(src));
-    try testing.expectEqualStrings("} ", result.values[2].list[1].trailing_ws.src(src));
-    // try testing.expectEqualStrings("} )", result.trailing.src(src));
+    const list0 = result.values[2].list[0];
+    try testing.expectEqualStrings(" [", result.whitespace[list0.index][0].src(src));
+    try testing.expectEqualStrings("] ", result.whitespace[list0.index][1].src(src));
+    const list1 = result.values[2].list[1];
+    try testing.expectEqualStrings("{", result.whitespace[list1.index][0].src(src));
+    try testing.expectEqualStrings("} ", result.whitespace[list1.index][1].src(src));
     try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
 
@@ -118,7 +126,7 @@ test "comments" {
         \\
         \\; defrecord defined, among other things, map->MenuItem which will take a map
     ;
-    var result = try edn.parseFromSlice(talloc, src);
+    var result = try edn.parseFromSlice(talloc, src, .{});
     defer result.deinit(talloc);
     try testing.expectEqual(6, result.values.len);
     try testing.expectEqual(.symbol, std.meta.activeTag(result.values[0]));
@@ -132,7 +140,7 @@ test "comments" {
 }
 
 fn testParse(alloc: std.mem.Allocator, src: []const u8) !void {
-    var result = try edn.parseFromSlice(alloc, src);
+    var result = try edn.parseFromSlice(alloc, src, .{});
     defer result.deinit(alloc);
 }
 
@@ -145,16 +153,14 @@ test "allocation failures" {
 }
 
 fn testEql(asrc: []const u8, bsrc: []const u8, alen: u8, blen: u8) !void {
-    var ares = try edn.parseFromSlice(talloc, asrc);
+    var ares = try edn.parseFromSlice(talloc, asrc, .{});
     defer ares.deinit(talloc);
-    var bres = try edn.parseFromSlice(talloc, bsrc);
+    var bres = try edn.parseFromSlice(talloc, bsrc, .{});
     defer bres.deinit(talloc);
     try testing.expectEqual(alen, ares.values.len);
     try testing.expectEqual(blen, bres.values.len);
     const a = ares.values[ares.values.len - 1];
     const b = bres.values[bres.values.len - 1];
-    // std.debug.print("a={}\n", .{edn.fmtParseResult(ares, asrc)});
-    // std.debug.print("b={}\n", .{edn.fmtParseResult(bres, bsrc)});
     try testing.expect(a.eql(asrc, ares.values, b, bsrc, bres.values));
 
     try testing.expectFmt(asrc, "{}", .{edn.fmtParseResult(ares, asrc)});
