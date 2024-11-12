@@ -4,11 +4,16 @@ const Allocator = mem.Allocator;
 
 const edn = @import("root.zig");
 
+pub const ValueIndexList = std.ArrayListUnmanaged(edn.ValueIndex);
+pub fn Map(V: type) type {
+    return std.ArrayHashMapUnmanaged(edn.ValueIndex, V, edn.MapContext, true);
+}
+
 src: []const u8,
 index: u32,
 alloc: Allocator,
 values: std.ArrayListUnmanaged(edn.Value) = .{},
-top_level_values: edn.ValueIndexList = .{},
+top_level_values: ValueIndexList = .{},
 whitespace: std.ArrayListUnmanaged([2]edn.Token) = .{},
 options: edn.Options,
 depth: u8, // only used when logging
@@ -58,15 +63,6 @@ pub fn next(p: *Parser) ?u8 {
     if (p.index >= p.src.len) return null;
     defer p.index += 1;
     return p.src[p.index];
-}
-
-fn tagEnd(tag: edn.Value.Tag) u8 {
-    return switch (tag) {
-        .list => ')',
-        .vector => ']',
-        .map, .set => '}',
-        else => unreachable,
-    };
 }
 
 fn isWhitespace(c: u8) bool {

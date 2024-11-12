@@ -47,10 +47,6 @@ pub const ValueIndex = struct {
     }
 };
 
-pub const ValueIndexList = std.ArrayListUnmanaged(ValueIndex);
-pub fn Map(V: type) type {
-    return std.ArrayHashMapUnmanaged(ValueIndex, V, MapContext, true);
-}
 pub const ValueIndexSet = []ValueIndex;
 pub const ValueIndexMap = struct { keys: []ValueIndex, values: []ValueIndex };
 
@@ -230,22 +226,27 @@ pub const ParseResult = struct {
 
 pub const Options = packed struct(u8) {
     whitespace: enum(u1) { include, exclude } = .include,
-    _padding: u7 = undefined,
+    mode: enum(u1) { allocate, measure } = .allocate,
+    _padding: u6 = undefined,
 };
 
 pub fn parseFromSlice(
     alloc: Allocator,
-    contents: []const u8,
+    src: []const u8,
     options: Options,
 ) !ParseResult {
-    var p: Parser = .init(alloc, contents, options);
-    errdefer p.deinit();
-    try parseValues(&p);
-    return .{
-        .values = try p.values.toOwnedSlice(alloc),
-        .top_level_values = try p.top_level_values.toOwnedSlice(alloc),
-        .whitespace = try p.whitespace.toOwnedSlice(alloc),
-    };
+    if (options.mode == .allocate) {
+        var p = Parser.init(alloc, src, options);
+        errdefer p.deinit();
+        try parseValues(&p);
+        return .{
+            .values = try p.values.toOwnedSlice(alloc),
+            .top_level_values = try p.top_level_values.toOwnedSlice(alloc),
+            .whitespace = try p.whitespace.toOwnedSlice(alloc),
+        };
+    } else {
+        unreachable;
+    }
 }
 
 pub fn fmtParseResult(
@@ -259,9 +260,9 @@ fn formatParseResult(
     data: struct { src: []const u8, parse_result: ParseResult },
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
-    _writer: anytype,
+    writer: anytype,
 ) !void {
-    var cw = std.io.countingWriter(_writer);
+    var cw = std.io.countingWriter(writer);
     for (data.parse_result.top_level_values) |vo| {
         try formatValue(.{
             .value = vo,
@@ -269,7 +270,7 @@ fn formatParseResult(
             .parse_result = data.parse_result,
         }, fmt, options, cw.writer());
     }
-    try _writer.writeAll(data.src[cw.bytes_written..]);
+    try writer.writeAll(data.src[cw.bytes_written..]);
 }
 
 pub fn fmtValue(
@@ -464,7 +465,7 @@ fn parseList(p: *Parser, prefix: u8) ParseError!Value {
     assert(p.peek(0) == prefix);
     p.index += 1;
 
-    var result = ValueIndexList{};
+    var result = Parser.ValueIndexList{};
     defer result.deinit(p.alloc);
     const end_char = matchingEndChar(prefix);
     while (true) {
@@ -492,14 +493,14 @@ fn parseMap(p: *Parser) ParseError!Value {
     assert(p.peek(0) == '{');
     p.index += 1;
 
-    var result = Map(ValueIndex){};
+    var result = Parser.Map(ValueIndex){};
     defer result.deinit(p.alloc);
     errdefer Value.deinitMap(p.alloc, result.keys(), result.values(), p.values.items);
 
     while (true) {
-        const peek = p.peek(0) orelse return error.Eof;
-        log.debug("{s: <[1]}parseMap '{2?c}'", .{ "", p.depth * 2, peek });
-        if (peek == '}') break;
+        const c = p.peek(0) orelse return error.Eof;
+        log.debug("{s: <[1]}parseMap '{2?c}'", .{ "", p.depth * 2, c });
+        if (c == '}') break;
 
         const gop = blk: {
             var key, const key_vi = try parseValue(p);
@@ -533,14 +534,14 @@ fn parseSet(p: *Parser) ParseError!Value {
     assert(p.peek(0) == '#' and p.peek(1) == '{');
     p.index += 2;
 
-    var result = Map(void){};
+    var result = Parser.Map(void){};
     defer result.deinit(p.alloc);
     errdefer Value.deinitSet(p.alloc, result.keys(), p.values.items);
 
     while (true) {
-        const peek = p.peek(0) orelse return error.Eof;
-        log.debug("{s: <[1]}parseSet '{2?c}'", .{ "", p.depth * 2, peek });
-        if (peek == '}') break;
+        const c = p.peek(0) orelse return error.Eof;
+        log.debug("{s: <[1]}parseSet '{2?c}'", .{ "", p.depth * 2, c });
+        if (c == '}') break;
 
         var v, const vi = try parseValue(p);
         errdefer v.deinit(p.alloc, p.values.items);
@@ -607,8 +608,7 @@ fn parseValue(p: *Parser) !struct { Value, ValueIndex } {
 }
 
 pub fn parseValues(p: *Parser) !void {
-    while (true) {
-        if (p.eos()) break;
+    while (!p.eos()) {
         var v, const vi = parseValue(p) catch |e| switch (e) {
             error.Eof => break,
             else => return e,
