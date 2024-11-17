@@ -4,41 +4,40 @@ const Allocator = mem.Allocator;
 
 const edn = @import("root.zig");
 
-pub const ValueIndexList = std.ArrayListUnmanaged(edn.ValueIndex);
-pub fn Map(V: type) type {
-    return std.ArrayHashMapUnmanaged(edn.ValueIndex, V, edn.MapContext, true);
-}
-
 src: []const u8,
 index: u32,
-alloc: Allocator,
-values: std.ArrayListUnmanaged(edn.Value) = .{},
-top_level_values: ValueIndexList = .{},
-whitespace: std.ArrayListUnmanaged([2]edn.Token) = .{},
+values_start: [*]edn.Value,
+values: [*]edn.Value,
+ws_start: [*][2]edn.Token,
+ws: [*][2]edn.Token,
 options: edn.Options,
 depth: u8, // only used when logging
+measured: struct {
+    values_len: u32 = 0,
+    whitespace_len: u32 = 0,
+    top_level_values_len: u32 = 0,
+} = .{},
 
 const Parser = @This();
 
-pub fn init(alloc: Allocator, src: []const u8, options: edn.Options) Parser {
+pub fn init(
+    src: []const u8,
+    options: edn.Options,
+    values_start: [*]edn.Value,
+    values: [*]edn.Value,
+    ws_start: [*][2]edn.Token,
+    ws: [*][2]edn.Token,
+) Parser {
     return .{
         .src = src,
         .index = 0,
-        .alloc = alloc,
         .depth = 0,
         .options = options,
+        .values_start = values_start,
+        .values = values,
+        .ws_start = ws_start,
+        .ws = ws,
     };
-}
-
-pub fn deinit(p: *Parser) void {
-    for (p.top_level_values.items) |vi| {
-        if (p.values.items.len > vi.index) {
-            p.values.items[vi.index].deinit(p.alloc, p.values.items);
-        }
-    }
-    p.values.deinit(p.alloc);
-    p.top_level_values.deinit(p.alloc);
-    p.whitespace.deinit(p.alloc);
 }
 
 pub fn isIntOrFloatDigit(c: u8) bool {
