@@ -12,11 +12,7 @@ ws_start: [*][2]edn.Token,
 ws: [*][2]edn.Token,
 options: edn.Options,
 depth: u8, // only used when logging
-measured: struct {
-    values_len: u32 = 0,
-    whitespace_len: u32 = 0,
-    top_level_values_len: u32 = 0,
-} = .{},
+measured: edn.Measured = .{},
 
 const Parser = @This();
 

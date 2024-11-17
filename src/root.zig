@@ -5,7 +5,7 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 
-const Parser = @import("Parser.zig");
+pub const Parser = @import("Parser.zig");
 
 pub const ParseError = error{
     Parse,
@@ -79,10 +79,10 @@ pub const Value = union(Value.Tag) {
     pub fn eql(
         a: Value,
         a_src: []const u8,
-        a_values: []Value,
+        a_values: []const Value,
         b: Value,
         b_src: []const u8,
-        b_values: []Value,
+        b_values: []const Value,
     ) bool {
         return a == std.meta.activeTag(b) and
             switch (a) {
@@ -93,7 +93,9 @@ pub const Value = union(Value.Tag) {
                 payload.src(a_src),
                 @field(b, @tagName(tag)).src(b_src),
             ),
-            inline .vector, .list => |payload, tag| for (payload, @field(b, @tagName(tag))) |aa, bb| {
+            inline .vector, .list => |payload, tag| payload.len == @field(b, @tagName(tag)).len and
+                for (payload, @field(b, @tagName(tag))) |aa, bb|
+            {
                 if (!aa.eql(a_src, a_values, bb, b_src, b_values)) break false;
             } else true,
             .character => |c| c == b.character,
@@ -156,13 +158,13 @@ pub const MapContext = struct {
 };
 
 pub const ParseResult = struct {
-    values: []Value,
-    whitespace: [][2]Token,
-    top_level_values_len: u32,
+    values: []const Value,
+    whitespaces: []const [2]Token,
+    top_level_values: u32,
 
     pub fn deinit(r: ParseResult, alloc: Allocator) void {
         alloc.free(r.values);
-        alloc.free(r.whitespace);
+        alloc.free(r.whitespaces);
     }
 };
 
@@ -174,48 +176,86 @@ pub const Options = packed struct(u8) {
 
 pub const ParseMode = enum(u1) { allocate, measure };
 
-pub fn parseFromSlice(
-    alloc: Allocator,
+pub const Measured = struct {
+    values: u32 = 0,
+    whitespaces: u32 = 0,
+    top_level_values: u32 = 0,
+};
+
+pub fn measure(src: []const u8, options: Options) !Measured {
+    var opts = options;
+    opts.mode = .measure;
+    var p = Parser.init(src, opts, undefined, undefined, undefined, undefined);
+    try parseValues(&p, .measure);
+    return p.measured;
+}
+
+pub fn parseFromSliceBuf(
     src: []const u8,
     options: Options,
+    values: []Value,
+    ws: [][2]Token,
+    measured: Measured,
 ) !ParseResult {
-    var p0 = Parser.init(src, options, undefined, undefined, undefined, undefined);
-    try parseValues(&p0, .measure);
-
-    if (options.mode == .measure) {
-        var result: ParseResult = undefined;
-        result.values.len = p0.measured.values_len;
-        result.whitespace.len = p0.measured.whitespace_len;
-        result.top_level_values_len = p0.measured.top_level_values_len;
-        return result;
-    }
-
-    const values = try alloc.alloc(Value, p0.measured.values_len);
-    errdefer alloc.free(values);
-    const ws = try alloc.alloc([2]Token, p0.measured.whitespace_len);
-    errdefer alloc.free(ws);
     var p = Parser.init(
         src,
         options,
         values.ptr,
-        values.ptr + p0.measured.top_level_values_len,
+        values.ptr + measured.top_level_values,
         ws.ptr,
-        ws.ptr + p0.measured.top_level_values_len,
+        ws.ptr + measured.top_level_values,
     );
-    p.measured = p0.measured;
+    p.measured = measured;
     try parseValues(&p, .allocate);
 
-    assert(p.values == p.values_start + p0.measured.values_len);
-    if (options.whitespace == .include)
-        assert(p.ws == p.ws_start + p0.measured.whitespace_len);
+    assert(p.values == p.values_start + measured.values);
+    if (options.whitespace == .include) assert(p.ws == p.ws_start + measured.whitespaces);
     assert(p.values_start == values.ptr);
     assert(p.ws_start == ws.ptr);
 
     return .{
-        .values = p.values_start[0..p0.measured.values_len],
-        .whitespace = p.ws_start[0..p0.measured.whitespace_len],
-        .top_level_values_len = p0.measured.top_level_values_len,
+        .values = p.values_start[0..measured.values],
+        .whitespaces = p.ws_start[0..measured.whitespaces],
+        .top_level_values = measured.top_level_values,
     };
+}
+
+pub fn parseFromSliceAlloc(
+    alloc: Allocator,
+    src: []const u8,
+    options: Options,
+) !ParseResult {
+    const measured = try measure(src, options);
+    if (options.mode == .measure) {
+        var r: ParseResult = undefined;
+        r.values.len = measured.values;
+        r.whitespaces.len = measured.whitespaces;
+        r.top_level_values = measured.top_level_values;
+        return r;
+    }
+
+    const values = try alloc.alloc(Value, measured.values);
+    errdefer alloc.free(values);
+    const ws = try alloc.alloc([2]Token, measured.whitespaces);
+    errdefer alloc.free(ws);
+
+    return parseFromSliceBuf(src, options, values, ws, measured);
+}
+
+pub const ComptimeOptions = struct { eval_branch_quota: u32 = 1000 };
+
+pub inline fn parseFromSliceComptime(
+    comptime src: []const u8,
+    comptime options: Options,
+    comptime comptime_options: ComptimeOptions,
+) !ParseResult {
+    comptime {
+        @setEvalBranchQuota(comptime_options.eval_branch_quota);
+        const measured = try measure(src, options);
+        var values: [measured.values]Value = undefined;
+        var ws: [measured.whitespaces][2]Token = undefined;
+        return parseFromSliceBuf(src, options, &values, &ws, measured);
+    }
 }
 
 pub fn fmtParseResult(
@@ -231,7 +271,7 @@ fn formatParseResult(
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
-    for (data.parse_result.values[0..data.parse_result.top_level_values_len], 0..) |v, ws_index| {
+    for (data.parse_result.values[0..data.parse_result.top_level_values], 0..) |v, ws_index| {
         try formatValue(.{
             .value = v,
             .ws_index = @intCast(ws_index),
@@ -269,8 +309,8 @@ fn formatValue(
 ) !void {
     const v = data.value;
 
-    if (data.ws_index < data.parse_result.whitespace.len)
-        try writer.writeAll(data.parse_result.whitespace[data.ws_index][0].src(data.src));
+    if (data.ws_index < data.parse_result.whitespaces.len)
+        try writer.writeAll(data.parse_result.whitespaces[data.ws_index][0].src(data.src));
 
     switch (v) {
         .true,
@@ -304,17 +344,19 @@ fn formatValue(
         },
     }
 
-    if (data.ws_index < data.parse_result.whitespace.len)
-        try writer.writeAll(data.parse_result.whitespace[data.ws_index][1].src(data.src));
+    if (data.ws_index < data.parse_result.whitespaces.len)
+        try writer.writeAll(data.parse_result.whitespaces[data.ws_index][1].src(data.src));
 }
 
 fn err(_: *const Parser, comptime fmt: []const u8, args: anytype) ParseError {
-    log.err(fmt, args);
+    if (@inComptime()) {
+        @compileError(std.fmt.comptimePrint(fmt, args));
+    } else log.err(fmt, args);
     return error.Parse;
 }
 
 fn parseAlpha(p: *Parser, prefix: ?u8) !Value {
-    log.debug("{s: <[1]}parseAlpha()", .{ "", p.depth * 2 });
+    debug("{s: <[1]}parseAlpha()", .{ "", p.depth * 2 });
     const rest = p.src[p.index..];
     if (mem.startsWith(u8, rest, "nil")) {
         p.index += 3;
@@ -339,7 +381,7 @@ fn isSymChar(c: u8) bool {
 }
 
 fn parseSym(p: *Parser, prefix: ?u8) !Value {
-    log.debug("{s: <[1]}parseSym()", .{ "", p.depth * 2 });
+    debug("{s: <[1]}parseSym()", .{ "", p.depth * 2 });
 
     const tagged = prefix == '#';
     const start = p.index;
@@ -391,7 +433,7 @@ fn parseNum(p: *Parser) !Value {
     const start = p.index;
     p.skipWhileFn(Parser.isIntOrFloatDigit);
     const src = p.src[start..p.index];
-    log.debug("{s: <[1]}parseNum() '{2s}'", .{ "", p.depth * 2, src });
+    debug("{s: <[1]}parseNum() '{2s}'", .{ "", p.depth * 2, src });
     return if (mem.indexOfScalar(u8, src, '.')) |_|
         .{ .float = .init(start, p.index) }
     else
@@ -399,7 +441,7 @@ fn parseNum(p: *Parser) !Value {
 }
 
 fn parseString(p: *Parser) !Value {
-    log.debug("{s: <[1]}parseString()", .{ "", p.depth * 2 });
+    debug("{s: <[1]}parseString()", .{ "", p.depth * 2 });
     const start = p.index;
     p.index += 1;
     // FIXME real parsing
@@ -409,7 +451,7 @@ fn parseString(p: *Parser) !Value {
 }
 
 fn parseChar(p: *Parser) !Value {
-    log.debug("{s: <[1]}parseChar()", .{ "", p.depth * 2 });
+    debug("{s: <[1]}parseChar()", .{ "", p.depth * 2 });
     // FIXME real parsing
     assert(p.peek(0) == '\\');
     p.index += 1;
@@ -419,7 +461,7 @@ fn parseChar(p: *Parser) !Value {
 }
 
 fn parseKeyword(p: *Parser) !Value {
-    log.debug("{s: <[1]}parseKeyword()", .{ "", p.depth * 2 });
+    debug("{s: <[1]}parseKeyword()", .{ "", p.depth * 2 });
     assert(p.peek(0) == ':');
     const start = p.index;
     p.skipUntilWs();
@@ -460,7 +502,7 @@ fn parseList(
     result: []Value,
     result_ws: [][2]Token,
 ) ParseError!u32 {
-    log.debug("{s: <[1]}parseList('{2?c}', {3s})", .{ "", p.depth * 2, prefix, @tagName(mode) });
+    debug("{s: <[1]}parseList('{2?c}', {3s})", .{ "", p.depth * 2, prefix, @tagName(mode) });
     assert(prefix == '(' or prefix == '[');
     p.depth += 1;
     defer p.depth -= 1;
@@ -471,7 +513,7 @@ fn parseList(
     const end_char = matchingEndChar(prefix);
     while (true) : (i += 1) {
         const c = p.peek(0) orelse return error.Eof;
-        log.debug("{s: <[1]}parseList('{2?c}')", .{ "", p.depth * 2, c });
+        debug("{s: <[1]}parseList('{2?c}')", .{ "", p.depth * 2, c });
         if (c == end_char) break;
         if (mode == .allocate) {
             try parseValue(p, mode, result[i..].ptr, result_ws[i..].ptr);
@@ -495,7 +537,7 @@ fn parseOrMeasureMap(p: *Parser, comptime mode: ParseMode) !ValueMap {
 
     const vs = p.values[0 .. len * 2];
     const ws = p.ws[0 .. len * 2];
-    const map = ValueMap{ .keys = vs[0..len], .values = vs[len..] };
+    const map: ValueMap = .{ .keys = vs[0..len], .values = vs[len..] };
     p.index = index;
     p.values = p.values[len * 2 ..];
     p.ws = p.ws[len * 2 ..];
@@ -504,8 +546,8 @@ fn parseOrMeasureMap(p: *Parser, comptime mode: ParseMode) !ValueMap {
 }
 
 fn parseMap(p: *Parser, comptime mode: ParseMode, result: ValueMap, result_wss: [2][][2]Token) ParseError!u32 {
-    log.debug("{s: <[1]}parseMap({2s})", .{ "", p.depth * 2, @tagName(mode) });
-    defer log.debug("{s: <[1]}<parseMap({2s})", .{ "", p.depth * 2, @tagName(mode) });
+    debug("{s: <[1]}parseMap({2s})", .{ "", p.depth * 2, @tagName(mode) });
+    defer debug("{s: <[1]}<parseMap({2s})", .{ "", p.depth * 2, @tagName(mode) });
     p.depth += 1;
     defer p.depth -= 1;
     assert(p.peek(0) == '{');
@@ -514,7 +556,7 @@ fn parseMap(p: *Parser, comptime mode: ParseMode, result: ValueMap, result_wss: 
     var i: u32 = 0;
     while (true) : (i += 1) {
         const c = p.peek(0) orelse return error.Eof;
-        log.debug("{s: <[1]}parseMap '{2?c}'", .{ "", p.depth * 2, c });
+        debug("{s: <[1]}parseMap '{2?c}'", .{ "", p.depth * 2, c });
         if (c == '}') break;
 
         if (mode == .allocate) {
@@ -525,7 +567,7 @@ fn parseMap(p: *Parser, comptime mode: ParseMode, result: ValueMap, result_wss: 
             try parseValue(p, mode, undefined, undefined);
         }
     }
-    log.debug("{s: <[1]}parseMap done len {2}", .{ "", p.depth * 2, i });
+    debug("{s: <[1]}parseMap done len {2}", .{ "", p.depth * 2, i });
     return i;
 }
 
@@ -553,7 +595,7 @@ fn parseSet(
     result: []Value,
     result_ws: [][2]Token,
 ) ParseError!u32 {
-    log.debug("{s: <[1]}parseSet({2s})", .{ "", p.depth * 2, @tagName(mode) });
+    debug("{s: <[1]}parseSet({2s})", .{ "", p.depth * 2, @tagName(mode) });
     p.depth += 1;
     defer p.depth -= 1;
     assert(p.peek(0) == '#' and p.peek(1) == '{');
@@ -561,7 +603,7 @@ fn parseSet(
     var i: u32 = 0;
     while (true) : (i += 1) {
         const c = p.peek(0) orelse return error.Eof;
-        log.debug("{s: <[1]}parseSet '{2?c}'", .{ "", p.depth * 2, c });
+        debug("{s: <[1]}parseSet '{2?c}'", .{ "", p.depth * 2, c });
         if (c == '}') break;
 
         if (mode == .allocate) {
@@ -581,14 +623,19 @@ fn parseDiscard(p: *Parser) !Value {
     unreachable;
 }
 
-fn parseValue(p: *Parser, comptime mode: ParseMode, result: [*]Value, wsresult: [*][2]Token) !void {
+fn parseValue(
+    p: *Parser,
+    comptime mode: ParseMode,
+    result: [*]Value,
+    whitespace_result: [*][2]Token,
+) !void {
     // track leading ws
     var leading_ws = Token.init(p.index, undefined);
     p.skipWsAndComments();
     leading_ws.end = p.index;
 
     const c = p.peek(0).?;
-    log.debug("{s: <[1]}parseValue() '{2?c}'", .{ "", p.depth * 2, c });
+    debug("{s: <[1]}parseValue() '{2?c}'", .{ "", p.depth * 2, c });
     const v: Value = switch (c) {
         'a'...'z', 'A'...'Z' => try parseSym(p, null),
         '0'...'9', '-' => try parseNum(p),
@@ -617,29 +664,29 @@ fn parseValue(p: *Parser, comptime mode: ParseMode, result: [*]Value, wsresult: 
     trailing_ws.end = p.index;
     if (p.options.whitespace == .include) {
         if (mode == .measure) {
-            p.measured.whitespace_len += 1;
+            p.measured.whitespaces += 1;
         } else {
-            wsresult[0] = .{ leading_ws, trailing_ws };
+            whitespace_result[0] = .{ leading_ws, trailing_ws };
         }
     }
 
-    log.debug(
+    debug(
         "{s: <[1]}parseValue({2s}) leadingws '{3s}' trailingws '{4s}'",
         .{ "", p.depth * 2, @tagName(mode), leading_ws.src(p.src), trailing_ws.src(p.src) },
     );
 
     if (mode == .measure) {
-        p.measured.values_len += 1;
+        p.measured.values += 1;
     } else {
         result[0] = v;
     }
 }
 
 pub fn parseValues(p: *Parser, comptime mode: ParseMode) !void {
-    // top_level_values are stored at the beginning of value_indexes
-    var top_level_vs = p.values_start[0..p.measured.top_level_values_len];
-    var top_level_ws = p.ws_start[0..p.measured.top_level_values_len];
-    log.debug("{s: <[1]}parseValues({2s}) {3}", .{ "", p.depth * 2, @tagName(mode), p.measured });
+    // top level values are stored at the beginning of values/whitespaces
+    var top_level_vs: []Value = p.values_start[0..p.measured.top_level_values];
+    var top_level_ws: [][2]Token = p.ws_start[0..p.measured.top_level_values];
+    debug("{s: <[1]}parseValues({2s}) {3}", .{ "", p.depth * 2, @tagName(mode), p.measured });
 
     var i: u32 = 0;
     while (!p.eos()) : (i += 1) {
@@ -655,10 +702,19 @@ pub fn parseValues(p: *Parser, comptime mode: ParseMode) !void {
                 error.Eof => break,
                 else => return e,
             };
-            p.measured.top_level_values_len += 1;
+            p.measured.top_level_values += 1;
         }
     }
-    if (mode == .allocate) assert(top_level_vs.len == 0);
+
+    if (mode == .allocate) {
+        assert(top_level_vs.len == 0);
+        assert(top_level_ws.len == 0);
+    }
 }
 
 const log = std.log.scoped(.edn);
+
+fn debug(comptime fmt: []const u8, args: anytype) void {
+    if (!@inComptime())
+        log.debug(fmt, args);
+}
