@@ -407,6 +407,7 @@ const Expectation = struct { edn.Value.Tag, u32 };
 fn expect(src: []const u8, expected: []const Expectation) !void {
     const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer res.deinit(talloc);
+    // std.debug.print("{any}\n", .{res.values[0..res.top_level_values]});
     try testing.expectEqual(expected.len, res.top_level_values);
     for (expected, res.values[0..res.top_level_values]) |ex, actual| {
         try testing.expectEqual(ex[0], std.meta.activeTag(actual));
@@ -416,6 +417,7 @@ fn expect(src: []const u8, expected: []const Expectation) !void {
             .symbol,
             .float,
             => |token| try testing.expectEqual(ex[1], token.end - token.start),
+            .character => |c| try testing.expectEqual(ex[1], c),
             else => {},
         }
     }
@@ -467,4 +469,37 @@ test "string parsing" {
     try expect(
         \\"hi""hi"
     , &.{ .{ .string, 4 }, .{ .string, 4 } });
+}
+
+test "char parsing" {
+    try expect(
+        \\\a
+    , &.{.{ .character, 'a' }});
+    try expect(
+        \\\u
+    , &.{.{ .character, 'u' }});
+    try expect(
+        \\\space
+    , &.{.{ .character, ' ' }});
+    try expect(
+        \\\newline
+    , &.{.{ .character, '\n' }});
+    try expect(
+        \\\return
+    , &.{.{ .character, '\r' }});
+    try expect(
+        \\\tab
+    , &.{.{ .character, '\t' }});
+    try expect(
+        \\\\
+    , &.{.{ .character, '\\' }});
+    try expect(
+        \\\u1F590
+    , &.{.{ .character, '🖐' }});
+    try expect(
+        \\\u"hi"
+    , &.{ .{ .character, 'u' }, .{ .string, 4 } });
+    try expect(
+        \\\u1F590"hi"
+    , &.{ .{ .character, '🖐' }, .{ .string, 4 } });
 }

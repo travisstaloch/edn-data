@@ -706,14 +706,45 @@ fn parseString(p: *Parser) !Value {
     return .{ .string = .init(start, p.index) };
 }
 
+// Characters are preceded by a backslash: \c, \newline, \return, \space
+// and \tab yield the corresponding characters. Unicode characters are
+// represented with \uNNNN as in Java. Backslash cannot be followed by
+// whitespace.
 fn parseChar(p: *Parser) !Value {
     debug("{s: <[1]}parseChar()", .{ "", p.depth * 2 });
-    // FIXME real parsing
     assert(p.peek(0) == '\\');
     p.index += 1;
-    const res: Value = .{ .character = p.next() orelse
-        return error.InvalidChar };
-    return res;
+
+    const rest = p.src[p.index..];
+    inline for ([_]struct { []const u8, u21 }{
+        .{ "space", ' ' },
+        .{ "newline", '\n' },
+        .{ "return", '\r' },
+        .{ "tab", '\t' },
+        .{ "\\", '\\' },
+    }) |char_escape| {
+        if (std.mem.startsWith(u8, rest, char_escape[0])) {
+            p.index += char_escape[0].len;
+            return .{ .character = char_escape[1] };
+        }
+    }
+
+    if (p.peek(0) == 'u') {
+        p.index += 1;
+        const start = p.index;
+        const end = @min(start + 5, p.src.len);
+        while (p.index < end) : (p.index += 1) {
+            switch (p.src[p.index]) {
+                'a'...'f', 'A'...'F', '0'...'9' => {},
+                else => break,
+            }
+        }
+        if (p.index == start) return .{ .character = 'u' };
+        const c = try std.fmt.parseUnsigned(u21, p.src[start..p.index], 16);
+        return .{ .character = c };
+    }
+
+    return .{ .character = p.next() orelse return error.InvalidChar };
 }
 
 // Keywords are identifiers that typically designate themselves. They are
