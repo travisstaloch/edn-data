@@ -10,14 +10,14 @@ pub const Parser = @import("Parser.zig");
 pub const ParseError = error{
     Parse,
     Eof,
-    CharInvalid,
+    InvalidChar,
     SymEmpty,
     SymInvalidFirstChar,
     SymIsDigit,
     MapDuplicateKey,
     SetDuplicateKey,
-    NoHandler,
     HandlerParse,
+    InvalidEscape,
 } ||
     Allocator.Error ||
     std.fmt.ParseIntError ||
@@ -689,8 +689,19 @@ fn parseString(p: *Parser) !Value {
     debug("{s: <[1]}parseString()", .{ "", p.depth * 2 });
     const start = p.index;
     p.index += 1;
-    // FIXME real parsing
-    p.skipUntilChar('"');
+    while (p.peek(0)) |c| : (p.index += 1) {
+        switch (c) {
+            '"' => break,
+            '\\' => {
+                const c2 = p.peek(1) orelse return error.InvalidEscape;
+                switch (c2) {
+                    'n', 'r', 't', '\\', '"' => p.index += 1,
+                    else => return error.InvalidEscape,
+                }
+            },
+            else => {},
+        }
+    }
     p.index += 1;
     return .{ .string = .init(start, p.index) };
 }
@@ -701,7 +712,7 @@ fn parseChar(p: *Parser) !Value {
     assert(p.peek(0) == '\\');
     p.index += 1;
     const res: Value = .{ .character = p.next() orelse
-        return error.CharInvalid };
+        return error.InvalidChar };
     return res;
 }
 

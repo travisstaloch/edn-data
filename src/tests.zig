@@ -401,3 +401,70 @@ test "tagged handler" {
     try testing.expectEqual(.integer, std.meta.activeTag(res.values[0].map.values[1]));
     try testing.expectEqual(0, res.values[0].map.values[1].integer);
 }
+
+const Expectation = struct { edn.Value.Tag, u32 };
+
+fn expect(src: []const u8, expected: []const Expectation) !void {
+    const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
+    defer res.deinit(talloc);
+    try testing.expectEqual(expected.len, res.top_level_values);
+    for (expected, res.values[0..res.top_level_values]) |ex, actual| {
+        try testing.expectEqual(ex[0], std.meta.activeTag(actual));
+        switch (actual) {
+            .string,
+            .keyword,
+            .symbol,
+            .float,
+            => |token| try testing.expectEqual(ex[1], token.end - token.start),
+            else => {},
+        }
+    }
+}
+
+test "string parsing" {
+    try expect(
+        \\""
+    , &.{.{ .string, 2 }});
+    try expect(
+        \\"hi"
+    , &.{.{ .string, 4 }});
+    try expect(
+        \\"hi there"
+    , &.{.{ .string, 10 }});
+    try expect(
+        \\"one\ntwo"
+    , &.{.{ .string, 10 }});
+    try expect(
+        \\"one\ntwo"
+    , &.{.{ .string, 10 }});
+    try expect(
+        \\"one\rtwo"
+    , &.{.{ .string, 10 }});
+    try expect(
+        \\"one\ttwo"
+    , &.{.{ .string, 10 }});
+    try expect(
+        \\"\\"
+    , &.{.{ .string, 4 }});
+    try expect(
+        \\"\""
+    , &.{.{ .string, 4 }});
+    try expect(
+        \\hi"hi"
+    , &.{ .{ .symbol, 2 }, .{ .string, 4 } });
+    try expect(
+        \\true"hi"
+    , &.{ .{ .true, 0 }, .{ .string, 4 } });
+    try expect(
+        \\"hi"true
+    , &.{ .{ .string, 4 }, .{ .true, 0 } });
+    try expect(
+        \\123"hi"
+    , &.{ .{ .integer, 0 }, .{ .string, 4 } });
+    try expect(
+        \\"hi"123
+    , &.{ .{ .string, 4 }, .{ .integer, 0 } });
+    try expect(
+        \\"hi""hi"
+    , &.{ .{ .string, 4 }, .{ .string, 4 } });
+}
