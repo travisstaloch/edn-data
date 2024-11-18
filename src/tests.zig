@@ -251,8 +251,56 @@ test "measure" {
 
 test "no ws" {
     // TODO - more coverage
-    const res = try edn.parseFromSliceAlloc(talloc, "(a, b, c)", .{ .whitespace = .exclude });
+    const res = try edn.parseFromSliceAlloc(talloc, "a b c", .{ .whitespace = .exclude }, .{});
     defer res.deinit(talloc);
+}
+
+test "ParseResult find()" {
+    const src =
+        \\(a b c {:a 1 :b 2 "foo" 3 ns/sym 4 5 5 \c 6})
+    ;
+    const res = try edn.parseFromSliceAlloc(talloc, src, .{ .whitespace = .exclude }, .{});
+    defer res.deinit(talloc);
+    try testing.expectError(error.PathNotFound, res.find("1", src));
+    try testing.expectError(error.PathNotFound, res.find("0//3//missing", src));
+    {
+        const v = (try res.find("0", src)).?;
+        try testing.expectEqual(.list, std.meta.activeTag(v));
+    }
+    {
+        const v = (try res.find("0//0", src)).?;
+        try testing.expectEqual(.symbol, std.meta.activeTag(v));
+    }
+    {
+        const v = (try res.find("0//3//:a", src)).?;
+        try testing.expectEqual(.integer, std.meta.activeTag(v));
+        try testing.expectEqual(1, v.integer);
+    }
+    {
+        const v = (try res.find("0//3//:b", src)).?;
+        try testing.expectEqual(.integer, std.meta.activeTag(v));
+        try testing.expectEqual(2, v.integer);
+    }
+    {
+        const v = (try res.find("0//3//\"foo\"", src)).?;
+        try testing.expectEqual(.integer, std.meta.activeTag(v));
+        try testing.expectEqual(3, v.integer);
+    }
+    {
+        const v = (try res.find("0//3//ns/sym", src)).?;
+        try testing.expectEqual(.integer, std.meta.activeTag(v));
+        try testing.expectEqual(4, v.integer);
+    }
+    { // 5 is an integer map key
+        const v = (try res.find("0//3//5", src)).?;
+        try testing.expectEqual(.integer, std.meta.activeTag(v));
+        try testing.expectEqual(5, v.integer);
+    }
+    {
+        const v = (try res.find("0//3//\\c", src)).?;
+        try testing.expectEqual(.integer, std.meta.activeTag(v));
+        try testing.expectEqual(6, v.integer);
+    }
 }
 
 test "comptime parse" {

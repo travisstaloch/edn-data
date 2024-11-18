@@ -167,6 +167,65 @@ pub const ParseResult = struct {
         alloc.free(r.values);
         alloc.free(r.whitespaces);
     }
+
+    fn getList(list: []Value, n: u32) !Value {
+        if (n >= list.len) return error.PathNotFound;
+        return list[n];
+    }
+
+    /// path: search components joined by double slashes ('//'). i.e. '0//1//foo'
+    pub fn find(r: ParseResult, path: []const u8, src: []const u8) !?Value {
+        var it = mem.splitSequence(u8, path, "//");
+        var cur: Value = .{ .list = @constCast(r.values[0..r.top_level_values]) };
+        component: while (it.next()) |component| {
+            switch (cur) {
+                .map => |map| for (map.keys, 0..) |k, i| {
+                    switch (k) {
+                        .string,
+                        .keyword,
+                        .symbol,
+                        .float,
+                        => |t| if (mem.eql(u8, component, t.src(src))) {
+                            cur = map.values[i];
+                            continue :component;
+                        },
+                        .integer => |n| {
+                            var buf: [std.math.log10(std.math.maxInt(i128)) + 1]u8 = undefined;
+                            const s = try std.fmt.bufPrint(&buf, "{}", .{n});
+                            if (mem.eql(u8, component, s)) {
+                                cur = map.values[i];
+                                continue :component;
+                            }
+                        },
+                        .character => |n| {
+                            var buf: [std.math.log10(std.math.maxInt(u21)) + 1]u8 = undefined;
+                            const s = try std.fmt.bufPrint(&buf, "\\{u}", .{n});
+                            if (mem.eql(u8, component, s)) {
+                                cur = map.values[i];
+                                continue :component;
+                            }
+                        },
+                        else => {},
+                    }
+                },
+                else => {},
+            }
+
+            if (std.fmt.parseUnsigned(u32, component, 10)) |n| {
+                switch (cur) {
+                    .list => cur = try getList(cur.list, n),
+                    .vector => cur = try getList(cur.vector, n),
+                    .set => cur = try getList(cur.set, n),
+                    .map => cur = try getList(cur.map.values, n),
+                    else => return error.PathNotFound,
+                }
+                continue :component;
+            } else |_| {}
+
+            return error.PathNotFound;
+        }
+        return cur;
+    }
 };
 
 pub const Options = packed struct(u8) {
