@@ -52,7 +52,7 @@ pub const Value = union(Value.Tag) {
     character: u21,
     keyword: Token,
     symbol: Token,
-    integer: isize,
+    integer: i128,
     float: Token,
     list: []Value,
     vector: []Value,
@@ -93,11 +93,12 @@ pub const Value = union(Value.Tag) {
                 payload.src(a_src),
                 @field(b, @tagName(tag)).src(b_src),
             ),
-            inline .vector, .list => |payload, tag| payload.len == @field(b, @tagName(tag)).len and
-                for (payload, @field(b, @tagName(tag))) |aa, bb|
-            {
-                if (!aa.eql(a_src, a_values, bb, b_src, b_values)) break false;
-            } else true,
+            inline .vector, .list => |as, tag| blk: {
+                const bs = @field(b, @tagName(tag));
+                break :blk as.len == bs.len and for (as, bs) |aa, bb| {
+                    if (!aa.eql(a_src, a_values, bb, b_src, b_values)) break false;
+                } else true;
+            },
             .character => |c| c == b.character,
             // TODO hashing doesn't guarantee uniqueness
             inline .map, .set => blk: {
@@ -258,6 +259,184 @@ pub inline fn parseFromSliceComptime(
     }
 }
 
+pub fn parseTypeFromSlice(
+    comptime T: type,
+    src: []const u8,
+) !T {
+    var p = Parser.init(src, .{}, undefined, undefined, undefined, undefined);
+    const t = try parseType(T, &p);
+    p.skipWsAndComments();
+    if (!p.eos()) return error.InvalidType;
+    return t;
+}
+
+inline fn unsupportedType(comptime T: type) noreturn {
+    @compileError("unsupported type '" ++ @typeName(T) ++ "'");
+}
+
+fn parseType(
+    comptime T: type,
+    p: *Parser,
+) !T {
+    return switch (@typeInfo(T)) {
+        .@"struct" => parseStruct(T, p),
+        .@"union" => u: {
+            const Fe = std.meta.FieldEnum(T);
+            if (p.peek(0) != '{') return error.InvalidUnion;
+            p.index += 1;
+            p.skipWsAndComments();
+            const c = p.peek(0) orelse return error.InvalidUnion;
+            const field = switch (c) {
+                ':' => blk: {
+                    const key = try parseKeyword(p);
+                    break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.src)[1..]) orelse
+                        return error.InvalidStructField;
+                },
+                else => {
+                    err(p, "unexpected '{c}'", .{c}) catch {};
+                    return error.InvalidUnion;
+                },
+            };
+            debug("{s: <[1]}parseType union key {2s}", .{ "", p.depth * 2, @tagName(field) });
+            p.skipWsAndComments();
+            const u = switch (field) {
+                inline else => |tag| @unionInit(
+                    T,
+                    @tagName(tag),
+                    try parseType(std.meta.FieldType(T, tag), p),
+                ),
+            };
+            if (p.peek(0) != '}') return error.InvalidUnion;
+            p.index += 1;
+            break :u u;
+        },
+        .bool => blk: {
+            const rest = p.src[p.index..];
+            if (mem.startsWith(u8, rest, "true")) {
+                p.index += 4;
+                break :blk true;
+            } else if (mem.startsWith(u8, rest, "false")) {
+                p.index += 5;
+                break :blk false;
+            } else break :blk error.InvaidBool;
+        },
+        .int => blk: {
+            const n = try parseNum(p);
+            if (n != .integer) return error.InvalidType;
+            break :blk std.math.cast(T, n.integer) orelse error.Overflow;
+        },
+        .float => blk: {
+            const n = try parseNum(p);
+            break :blk switch (n) {
+                .integer => break :blk @floatFromInt(n.integer),
+                .float => break :blk std.fmt.parseFloat(T, n.float.src(p.src)),
+                else => return error.InvalidType,
+            };
+        },
+        .pointer => |i| blk: switch (i.size) {
+            .Slice => switch (i.child) {
+                u8 => {
+                    const s = try parseString(p);
+                    break :blk s.string.src(p.src);
+                },
+                else => unsupportedType(T),
+            },
+            else => unsupportedType(T),
+        },
+        .optional => |i| blk: {
+            const rest = p.src[p.index..];
+            if (mem.startsWith(u8, rest, "nil")) {
+                p.index += 3;
+                break :blk null;
+            }
+            break :blk try parseType(i.child, p);
+        },
+        .@"enum" => blk: {
+            const key = try parseKeyword(p);
+            debug("enum key {s}", .{key.keyword.src(p.src)});
+            break :blk std.meta.stringToEnum(T, key.keyword.src(p.src)[1..]) orelse
+                error.InvalidEnum;
+        },
+        inline .array, .vector => |i| blk: {
+            var a: [i.len]i.child = undefined;
+            p.skipWsAndComments();
+            if (p.peek(0) != '[') return error.InvalidArray;
+            p.index += 1;
+            for (&a) |*ele| {
+                p.skipWsAndComments();
+                ele.* = try parseType(i.child, p);
+            }
+            p.skipWsAndComments();
+            if (p.peek(0) != ']') return error.InvalidArray;
+            p.index += 1;
+            break :blk a;
+        },
+        else => unsupportedType(T),
+    };
+}
+
+fn parseStruct(
+    comptime T: type,
+    p: *Parser,
+) !T {
+    const Fe = std.meta.FieldEnum(T);
+    var seen_fields = std.enums.EnumSet(Fe).initEmpty();
+
+    debug("{s: <[1]}parseStruct({2s})", .{ "", p.depth * 2, @typeName(T) });
+    defer debug("{s: <[1]}<parseStruct({2s})", .{ "", p.depth * 2, @typeName(T) });
+    p.depth += 1;
+    defer p.depth -= 1;
+    if (p.peek(0) != '{') return error.InvalidStruct;
+    p.index += 1;
+    var t: T = undefined;
+
+    while (true) {
+        p.skipWsAndComments();
+        const c = p.peek(0) orelse return error.Eof;
+        debug("{s: <[1]}parseStruct '{2?c}'", .{ "", p.depth * 2, c });
+        if (c == '}') {
+            p.index += 1;
+            break;
+        }
+
+        const field = switch (c) {
+            ':' => blk: {
+                const key = try parseKeyword(p);
+                break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.src)[1..]) orelse
+                    return error.InvalidStructField;
+            },
+            else => {
+                err(p, "unexpected '{c}'", .{c}) catch {};
+                return error.InvalidStruct;
+            },
+        };
+        debug("{s: <[1]}parseStruct key {2s}", .{ "", p.depth * 2, @tagName(field) });
+        p.skipWsAndComments();
+        switch (field) {
+            inline else => |tag| {
+                @field(t, @tagName(tag)) = try parseType(std.meta.FieldType(T, tag), p);
+            },
+        }
+        seen_fields.insert(field);
+    }
+
+    var unseen_iter = seen_fields.complement().iterator();
+    while (unseen_iter.next()) |field| switch (field) {
+        inline else => |tag| {
+            const info = std.meta.fieldInfo(T, tag);
+            if (info.default_value) |default| {
+                const d: *const info.type = @ptrCast(default);
+                @field(t, @tagName(tag)) = d.*;
+                seen_fields.insert(tag);
+            } else {
+                err(p, "missing field '{s}'", .{@tagName(tag)}) catch {};
+            }
+        },
+    };
+    if (seen_fields.complement().count() != 0) return error.MissingFields;
+    return t;
+}
+
 pub fn fmtParseResult(
     parse_result: ParseResult,
     src: []const u8,
@@ -351,25 +530,8 @@ fn formatValue(
 fn err(_: *const Parser, comptime fmt: []const u8, args: anytype) ParseError {
     if (@inComptime()) {
         @compileError(std.fmt.comptimePrint(fmt, args));
-    } else log.err(fmt, args);
+    } else if (!@import("builtin").is_test) log.err(fmt, args);
     return error.Parse;
-}
-
-fn parseAlpha(p: *Parser, prefix: ?u8) !Value {
-    debug("{s: <[1]}parseAlpha()", .{ "", p.depth * 2 });
-    const rest = p.src[p.index..];
-    if (mem.startsWith(u8, rest, "nil")) {
-        p.index += 3;
-        return .nil;
-    } else if (mem.startsWith(u8, rest, "true")) {
-        p.index += 4;
-        return .true;
-    } else if (mem.startsWith(u8, rest, "false")) {
-        p.index += 5;
-        return .false;
-    } else {
-        return .{ .symbol = try parseSym(p, prefix) };
-    }
 }
 
 fn isSymChar(c: u8) bool {
@@ -437,7 +599,7 @@ fn parseNum(p: *Parser) !Value {
     return if (mem.indexOfScalar(u8, src, '.')) |_|
         .{ .float = .init(start, p.index) }
     else
-        .{ .integer = try std.fmt.parseInt(isize, src, 10) };
+        .{ .integer = try std.fmt.parseInt(i128, src, 10) };
 }
 
 fn parseString(p: *Parser) !Value {
@@ -460,12 +622,17 @@ fn parseChar(p: *Parser) !Value {
     return res;
 }
 
+// Keywords are identifiers that typically designate themselves. They are
+// semantically akin to enumeration values. Keywords follow the rules of
+// symbols, except they can (and must) begin with :, e.g. :fred or :my/fred.
 fn parseKeyword(p: *Parser) !Value {
     debug("{s: <[1]}parseKeyword()", .{ "", p.depth * 2 });
     assert(p.peek(0) == ':');
     const start = p.index;
-    p.skipUntilWs();
-    return .{ .keyword = .init(start, p.index) };
+    p.index += 1;
+    var sym = try parseSym(p, null);
+    sym.symbol.start = start;
+    return .{ .keyword = sym.symbol };
 }
 
 fn matchingEndChar(c: u8) u8 {
@@ -682,7 +849,7 @@ fn parseValue(
     }
 }
 
-pub fn parseValues(p: *Parser, comptime mode: ParseMode) !void {
+fn parseValues(p: *Parser, comptime mode: ParseMode) !void {
     // top level values are stored at the beginning of values/whitespaces
     var top_level_vs: []Value = p.values_start[0..p.measured.top_level_values];
     var top_level_ws: [][2]Token = p.ws_start[0..p.measured.top_level_values];

@@ -165,6 +165,11 @@ fn testEql(asrc: []const u8, bsrc: []const u8, alen: u8, blen: u8) !void {
     try testing.expectEqual(blen, bres.values.len);
     try testing.expectEqual(1, ares.top_level_values);
     try testing.expectEqual(1, bres.top_level_values);
+    var actx = edn.MapContext{ .src = asrc, .values = ares.values };
+    var bctx = edn.MapContext{ .src = bsrc, .values = bres.values };
+    if (actx.hash(ares.values[0]) != bctx.hash(bres.values[0])) {
+        return error.TestExpectedEqual;
+    }
     try testing.expect(ares.values[0].eql(asrc, ares.values, bres.values[0], bsrc, bres.values));
 
     try testing.expectFmt(asrc, "{}", .{edn.fmtParseResult(ares, asrc)});
@@ -172,7 +177,12 @@ fn testEql(asrc: []const u8, bsrc: []const u8, alen: u8, blen: u8) !void {
 }
 
 fn testNotEql(asrc: []const u8, bsrc: []const u8, alen: u8, blen: u8) !void {
-    try testing.expectError(error.TestUnexpectedResult, testEql(asrc, bsrc, alen, blen));
+    testEql(asrc, bsrc, alen, blen) catch |e| switch (e) {
+        error.TestUnexpectedResult,
+        error.TestExpectedEqual,
+        => {},
+        else => return e,
+    };
 }
 
 inline fn concatStrs(
@@ -215,7 +225,14 @@ const test_srcs = test_scalars ++ [_]struct { []const u8, u8 }{
 test "eqluality" {
     try testNotEql("1", "1.0", 1, 1);
     try testEql("1.0", "1.0", 1, 1);
+    try testEql("1", "1", 1, 1);
     try testNotEql("1.0", "1.00", 1, 1);
+    try testEql("#{1}", "#{1}", 2, 2);
+    try testEql("{1 1}", "{1 1}", 3, 3);
+    const s =
+        \\(nil true false 1 1.0 \c ns/name {:a 1 :b 2 :c 3} #{:a 1 "foo"} (:a 1 "foo"))
+    ;
+    try testEql(s, s, 23, 23);
     inline for (test_srcs) |asrc| {
         inline for (test_srcs) |bsrc| {
             if (std.mem.eql(u8, asrc[0], bsrc[0]))
@@ -246,4 +263,63 @@ test "comptime parse" {
             try testing.expectEqualStrings(src, std.fmt.comptimePrint("{}", .{edn.fmtParseResult(res, src)}));
         }
     }
+}
+
+const TestCase = struct {
+    n: i8,
+    s: []const u8,
+    e: enum { a, b },
+    f: f32,
+    b: bool,
+    o: ?u8,
+    o2: ?u8,
+    a: [2]u8,
+    v: @Vector(2, u8),
+    u: union(enum) { a: u8, s: []const u8 },
+    u2: union { a: u8 },
+};
+
+fn expectTestCase(s: TestCase) !void {
+    try testing.expectEqual(-1, s.n);
+    try testing.expectEqualStrings(
+        \\"b"
+    , s.s);
+    try testing.expectEqual(.a, s.e);
+    try testing.expectEqual(42, s.f);
+    try testing.expectEqual(true, s.b);
+    try testing.expectEqual(null, s.o);
+    try testing.expectEqual(0, s.o2);
+    try testing.expectEqual(.{ 1, 2 }, s.a);
+    try testing.expectEqual(.{ 3, 4 }, s.v);
+    try testing.expectEqual(.a, std.meta.activeTag(s.u));
+    try testing.expectEqual(1, s.u.a);
+    try testing.expectEqual(1, s.u2.a);
+}
+
+test "parse into struct" {
+    const src =
+        \\{
+        \\ :n -1, :s "b", :e :a, :f 42, :b true, :o nil,
+        \\ :o2 0, :a [1,2], :v [3,4], :u {:a 1}, :u2 {:a 1}
+        \\}
+    ;
+
+    try expectTestCase(try edn.parseTypeFromSlice(TestCase, src));
+    comptime {
+        @setEvalBranchQuota(10000);
+        try expectTestCase(try edn.parseTypeFromSlice(TestCase, src));
+    }
+}
+
+test "missing fields and default values" {
+    try testing.expectError(
+        error.MissingFields,
+        edn.parseTypeFromSlice(struct { n: i8 }, "{}"),
+    );
+    try testing.expectError(
+        error.InvalidUnion,
+        edn.parseTypeFromSlice(union { n: i8 }, "{}"),
+    );
+    const s = try edn.parseTypeFromSlice(struct { n: i8 = 42 }, "{}");
+    try testing.expectEqual(42, s.n);
 }
