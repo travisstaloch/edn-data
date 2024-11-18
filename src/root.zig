@@ -16,6 +16,8 @@ pub const ParseError = error{
     SymIsDigit,
     MapDuplicateKey,
     SetDuplicateKey,
+    NoHandler,
+    HandlerParse,
 } ||
     Allocator.Error ||
     std.fmt.ParseIntError ||
@@ -158,6 +160,20 @@ pub const MapContext = struct {
     }
 };
 
+pub const TaggedElementHandler = struct {
+    pub const Fn = *const fn (
+        value: Value,
+        value_src: []const u8,
+        src: []const u8,
+    ) ParseError!Value;
+
+    /// initialization format: {tag_name, handler_fn}.
+    /// tag_name must include leading '#'.
+    pub const Data = struct { []const u8, Fn };
+
+    pub const Map = std.StaticStringMap(Fn);
+};
+
 pub const ParseResult = struct {
     values: []const Value,
     whitespaces: []const [2]Token,
@@ -242,10 +258,10 @@ pub const Measured = struct {
     top_level_values: u32 = 0,
 };
 
-pub fn measure(src: []const u8, options: Options) !Measured {
+pub fn measure(src: []const u8, options: Options, comptime comptime_options: ComptimeOptions) !Measured {
     var opts = options;
     opts.mode = .measure;
-    var p = Parser.init(src, opts, undefined, undefined, undefined, undefined);
+    var p = Parser.init(src, opts, undefined, undefined, undefined, undefined, comptime_options.handlers);
     try parseValues(&p, .measure);
     return p.measured;
 }
@@ -256,6 +272,7 @@ pub fn parseFromSliceBuf(
     values: []Value,
     ws: [][2]Token,
     measured: Measured,
+    comptime comptime_options: ComptimeOptions,
 ) !ParseResult {
     var p = Parser.init(
         src,
@@ -264,6 +281,7 @@ pub fn parseFromSliceBuf(
         values.ptr + measured.top_level_values,
         ws.ptr,
         ws.ptr + measured.top_level_values,
+        comptime_options.handlers,
     );
     p.measured = measured;
     try parseValues(&p, .allocate);
@@ -284,8 +302,9 @@ pub fn parseFromSliceAlloc(
     alloc: Allocator,
     src: []const u8,
     options: Options,
+    comptime comptime_options: ComptimeOptions,
 ) !ParseResult {
-    const measured = try measure(src, options);
+    const measured = try measure(src, options, comptime_options);
     if (options.mode == .measure) {
         var r: ParseResult = undefined;
         r.values.len = measured.values;
@@ -299,10 +318,13 @@ pub fn parseFromSliceAlloc(
     const ws = try alloc.alloc([2]Token, measured.whitespaces);
     errdefer alloc.free(ws);
 
-    return parseFromSliceBuf(src, options, values, ws, measured);
+    return parseFromSliceBuf(src, options, values, ws, measured, comptime_options);
 }
 
-pub const ComptimeOptions = struct { eval_branch_quota: u32 = 1000 };
+pub const ComptimeOptions = struct {
+    eval_branch_quota: u32 = 1000,
+    handlers: []const TaggedElementHandler.Data = &.{},
+};
 
 pub inline fn parseFromSliceComptime(
     comptime src: []const u8,
@@ -311,18 +333,19 @@ pub inline fn parseFromSliceComptime(
 ) !ParseResult {
     comptime {
         @setEvalBranchQuota(comptime_options.eval_branch_quota);
-        const measured = try measure(src, options);
+        const measured = try measure(src, options, comptime_options);
         var values: [measured.values]Value = undefined;
         var ws: [measured.whitespaces][2]Token = undefined;
-        return parseFromSliceBuf(src, options, &values, &ws, measured);
+        return parseFromSliceBuf(src, options, &values, &ws, measured, comptime_options);
     }
 }
 
+// TODO support tagged element handlers
 pub fn parseTypeFromSlice(
     comptime T: type,
     src: []const u8,
 ) !T {
-    var p = Parser.init(src, .{}, undefined, undefined, undefined, undefined);
+    var p = Parser.init(src, .{}, undefined, undefined, undefined, undefined, &.{});
     const t = try parseType(T, &p);
     p.skipWsAndComments();
     if (!p.eos()) return error.InvalidType;
@@ -337,6 +360,7 @@ fn parseType(
     comptime T: type,
     p: *Parser,
 ) !T {
+    // TODO check for user defined ednParse()
     return switch (@typeInfo(T)) {
         .@"struct" => parseStruct(T, p),
         .@"union" => u: {
@@ -849,20 +873,10 @@ fn parseDiscard(p: *Parser) !Value {
     unreachable;
 }
 
-fn parseValue(
-    p: *Parser,
-    comptime mode: ParseMode,
-    result: [*]Value,
-    whitespace_result: [*][2]Token,
-) !void {
-    // track leading ws
-    var leading_ws = Token.init(p.index, undefined);
-    p.skipWsAndComments();
-    leading_ws.end = p.index;
-
+fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Value {
     const c = p.peek(0).?;
-    debug("{s: <[1]}parseValue() '{2?c}'", .{ "", p.depth * 2, c });
-    const v: Value = switch (c) {
+    debug("{s: <[1]}parseValueInner() '{2?c}'", .{ "", p.depth * 2, c });
+    return switch (c) {
         'a'...'z', 'A'...'Z' => try parseSym(p, null),
         '0'...'9', '-' => try parseNum(p),
         '"' => try parseString(p),
@@ -874,10 +888,59 @@ fn parseValue(
         '#' => if (p.peek(1)) |d| switch (d) {
             '{' => .{ .set = try parseOrMeasureSet(p, mode) },
             '_' => try parseDiscard(p),
-            else => try parseSym(p, c),
+            else => blk: {
+                const sym = try parseSym(p, c);
+                // Upon encountering a tag, the reader will first read the
+                // next element (which may itself be or comprise other
+                // tagged elements), then pass the result to the
+                // corresponding handler for further interpretation, and
+                // the result of the handler will be the data value yielded
+                // by the tag + tagged element, i.e. reading a tag and
+                // tagged element yields one value.
+
+                // If a reader encounters a tag for which no handler is
+                // registered, the implementation can either report an error,
+                // call a designated 'unknown element' handler, or create a
+                // well-known generic representation that contains both the
+                // tag and the tagged element, as it sees fit. Note that the
+                // non-error strategies allow for readers which are capable of
+                // reading any and all edn, in spite of being unaware of the
+                // details of any extensions present.
+
+                // Current strategy is to ignore the tagged symbol, adding it
+                // to leading ws and fall back on default value parsing when
+                // no handler is present.
+                p.skipWsAndComments();
+                leading_ws.end = p.index;
+                const next_start = p.index;
+                var next_dummy_leading_ws = Token.init(p.index, undefined);
+                const next = try parseValueInner(p, mode, &next_dummy_leading_ws);
+                const v = if (p.handlers.get(sym.symbol.src(p.src))) |handler| v: {
+                    const next_end = p.index;
+                    const v = try handler(next, p.src[next_start..next_end], p.src);
+                    break :v v;
+                } else v: {
+                    break :v next;
+                };
+                break :blk v;
+            },
         } else return err(p, "unexpected end of file '{c}'", .{c}),
         else => return err(p, "unexpected character '{c}'", .{c}),
     };
+}
+fn parseValue(
+    p: *Parser,
+    comptime mode: ParseMode,
+    result: [*]Value,
+    whitespace_result: [*][2]Token,
+) !void {
+    // track leading ws
+    var leading_ws = Token.init(p.index, undefined);
+    p.skipWsAndComments();
+    leading_ws.end = p.index;
+
+    const v = try parseValueInner(p, mode, &leading_ws);
+
     // leading ws includes any container opening chars such as '(', '#{'
     const is_container = @intFromBool(@intFromEnum(v) >= @intFromEnum(Value.Tag.list));
     leading_ws.end += is_container;

@@ -6,7 +6,7 @@ const edn = @import("extensible-data-notation");
 
 fn expectTag(src: []const u8, tag: edn.Value.Tag) !void {
     // std.debug.print("src '{s}'\n", .{src});
-    const res = try edn.parseFromSliceAlloc(talloc, src, .{});
+    const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer res.deinit(talloc);
     const top_level_vs = res.values[0..res.top_level_values];
     const tlv = top_level_vs[top_level_vs.len - 1];
@@ -36,7 +36,7 @@ test "map" {
         \\
     ;
 
-    const result = try edn.parseFromSliceAlloc(talloc, src, .{});
+    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer result.deinit(talloc);
     try testing.expectEqual(7, result.values.len);
     try testing.expectEqual(1, result.top_level_values);
@@ -59,7 +59,7 @@ test "list basic" {
         \\  [name rating])
     ;
 
-    const result = try edn.parseFromSliceAlloc(talloc, src, .{});
+    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer result.deinit(talloc);
     try testing.expectEqual(1, result.top_level_values);
     try testing.expectEqual(6, result.values.len);
@@ -99,7 +99,7 @@ test "list basic" {
 
 test "nested list" {
     const src = " ( [] {} ) ";
-    const result = try edn.parseFromSliceAlloc(talloc, src, .{});
+    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer result.deinit(talloc);
 
     const list_vi = result.values[0];
@@ -128,7 +128,7 @@ test "comments" {
         \\
         \\; defrecord defined, among other things, map->MenuItem which will take a map
     ;
-    const result = try edn.parseFromSliceAlloc(talloc, src, .{});
+    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer result.deinit(talloc);
     try testing.expectEqual(6, result.values.len);
     try testing.expectEqual(.list, std.meta.activeTag(result.values[0]));
@@ -142,9 +142,9 @@ test "comments" {
 }
 
 fn testParse(alloc: std.mem.Allocator, src: []const u8) !void {
-    const result = try edn.parseFromSliceAlloc(alloc, src, .{});
+    const result = try edn.parseFromSliceAlloc(alloc, src, .{}, .{});
     defer result.deinit(alloc);
-    const result2 = try edn.parseFromSliceAlloc(alloc, src, .{ .whitespace = .exclude });
+    const result2 = try edn.parseFromSliceAlloc(alloc, src, .{ .whitespace = .exclude }, .{});
     defer result2.deinit(alloc);
 }
 
@@ -157,9 +157,9 @@ test "allocation failures" {
 }
 
 fn testEql(asrc: []const u8, bsrc: []const u8, alen: u8, blen: u8) !void {
-    const ares = try edn.parseFromSliceAlloc(talloc, asrc, .{});
+    const ares = try edn.parseFromSliceAlloc(talloc, asrc, .{}, .{});
     defer ares.deinit(talloc);
-    const bres = try edn.parseFromSliceAlloc(talloc, bsrc, .{});
+    const bres = try edn.parseFromSliceAlloc(talloc, bsrc, .{}, .{});
     defer bres.deinit(talloc);
     try testing.expectEqual(alen, ares.values.len);
     try testing.expectEqual(blen, bres.values.len);
@@ -244,7 +244,7 @@ test "eqluality" {
 }
 
 test "measure" {
-    const measured = try edn.measure("(a, b, c)", .{});
+    const measured = try edn.measure("(a, b, c)", .{}, .{});
     try testing.expectEqual(4, measured.values);
     try testing.expectEqual(4, measured.whitespaces);
 }
@@ -370,4 +370,34 @@ test "missing fields and default values" {
     );
     const s = try edn.parseTypeFromSlice(struct { n: i8 = 42 }, "{}");
     try testing.expectEqual(42, s.n);
+}
+
+test "tagged handler" {
+    const datasrc =
+        \\"2020-04-13T08:01:14.261Z"
+    ;
+    const src =
+        \\{:crux.tx/tx-id 2 :crux.tx/tx-time #inst 
+    ++ datasrc ++ "}";
+    const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{
+        .handlers = &.{.{
+            "#inst",
+            struct {
+                fn handleInst(
+                    value: edn.Value,
+                    value_src: []const u8,
+                    whole_src: []const u8,
+                ) edn.ParseError!edn.Value {
+                    _ = whole_src;
+                    _ = value;
+                    std.debug.assert(std.mem.eql(u8, value_src, datasrc));
+                    return .{ .integer = 0 };
+                }
+            }.handleInst,
+        }},
+    });
+    defer res.deinit(talloc);
+    try testing.expectEqual(2, res.values[0].map.keys.len);
+    try testing.expectEqual(.integer, std.meta.activeTag(res.values[0].map.values[1]));
+    try testing.expectEqual(0, res.values[0].map.values[1].integer);
 }

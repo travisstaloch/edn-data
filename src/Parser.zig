@@ -13,6 +13,7 @@ ws: [*][2]edn.Token,
 options: edn.Options,
 depth: u8, // only used when logging
 measured: edn.Measured = .{},
+handlers: edn.TaggedElementHandler.Map,
 
 const Parser = @This();
 
@@ -23,6 +24,7 @@ pub fn init(
     values: [*]edn.Value,
     ws_start: [*][2]edn.Token,
     ws: [*][2]edn.Token,
+    comptime handlers: []const edn.TaggedElementHandler.Data,
 ) Parser {
     return .{
         .src = src,
@@ -33,6 +35,7 @@ pub fn init(
         .values = values,
         .ws_start = ws_start,
         .ws = ws,
+        .handlers = edn.TaggedElementHandler.Map.initComptime(handlers),
     };
 }
 
