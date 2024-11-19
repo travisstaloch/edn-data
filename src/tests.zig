@@ -415,6 +415,7 @@ const Expectation = union(enum) {
     vector: []const Expectation,
     list: []const Expectation,
     set: []const Expectation,
+    map: []const [2]Expectation,
 };
 
 fn expectOne(ex: Expectation, actual: edn.Value, src: []const u8) !void {
@@ -451,7 +452,14 @@ fn expectOne(ex: Expectation, actual: edn.Value, src: []const u8) !void {
                 try expectOne(e, a, src);
             }
         },
-        .map => unreachable,
+        .map => |v| {
+            try testing.expectEqual(ex.map.len, v.keys.len);
+            try testing.expectEqual(ex.map.len, v.values.len);
+            for (ex.map, 0..) |e, i| {
+                try expectOne(e[0], v.keys[i], src);
+                try expectOne(e[1], v.values[i], src);
+            }
+        },
     }
 }
 
@@ -475,6 +483,9 @@ const str_two = Expectation{ .string = quote("two") };
 const str_and_two = Expectation{ .string = quote("and two") };
 const str_well = Expectation{ .string = quote("well, then.") };
 const sym_hi = Expectation{ .symbol = "hi" };
+const str_a = Expectation{ .string = quote("a") };
+const str_b = Expectation{ .string = quote("b") };
+const str_c = Expectation{ .string = quote("c") };
 
 test "string parsing" {
     try expect(
@@ -692,4 +703,38 @@ test "set parsing" {
     try expect("#{#{}\"hi\"}", &.{.{
         .set = &.{ empty_set, str_hi },
     }});
+}
+
+test "map parsing" {
+    const empty_map = Expectation{ .map = &.{} };
+    try expect("{}", &.{empty_map});
+    try expect("{  }", &.{empty_map});
+    try expect("{\"one\" \"two\"}", &.{.{ .map = &.{.{ str_one, str_two }} }});
+    try expect("{\"a\" true, \"b\" false }", &.{
+        .{ .map = &.{ .{ str_a, .true }, .{ str_b, .false } } },
+    });
+    try expect("{true  {\"one\" {\"two\", nil }}}", &.{
+        .{ .map = &.{.{ .true, .{ .map = &.{.{ str_one, .{ .map = &.{.{ str_two, .nil }} } }} } }} },
+    });
+    try expect("{\"a\"  {\"b\" {\"c\", 123}}}", &.{
+        .{ .map = &.{.{ str_a, .{ .map = &.{.{ str_b, .{ .map = &.{.{ str_c, .{ .integer = 123 } }} } }} } }} },
+    });
+    try expect("{hi{}}", &.{
+        .{ .map = &.{.{ sym_hi, empty_map }} },
+    });
+    try expect("{{}hi}", &.{
+        .{ .map = &.{.{ empty_map, sym_hi }} },
+    });
+    try expect("{false{}}", &.{
+        .{ .map = &.{.{ .false, empty_map }} },
+    });
+    try expect("{{}false}", &.{
+        .{ .map = &.{.{ empty_map, .false }} },
+    });
+    try expect("{\"hi\"{}}", &.{
+        .{ .map = &.{.{ str_hi, empty_map }} },
+    });
+    try expect("{{}\"hi\"}", &.{
+        .{ .map = &.{.{ empty_map, str_hi }} },
+    });
 }
