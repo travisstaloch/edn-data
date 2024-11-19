@@ -738,3 +738,43 @@ test "map parsing" {
         .{ .map = &.{.{ empty_map, str_hi }} },
     });
 }
+
+test "discard parsing" {
+    try expect("#_\"hi\"", &.{});
+    try expect("#_  \"hi\"", &.{});
+    try expect("#_928764", &.{});
+    try expect("#_  928764", &.{});
+    try expect("#_even? ", &.{});
+    try expect("#_  even? ", &.{});
+    try expect("#_:a", &.{});
+    try expect("#_  :a", &.{});
+    try expect("#_[]", &.{});
+    try expect("#_  []", &.{});
+    try expect("#_()", &.{});
+    try expect("#_  ()", &.{});
+    try expect("#_#{}", &.{});
+    try expect("#_  #{}", &.{});
+    try expect("#_{}", &.{});
+    try expect("#_  {}", &.{});
+    const int1 = Expectation{ .integer = 1 };
+    const int2 = Expectation{ .integer = 2 };
+    const int3 = Expectation{ .integer = 3 };
+    const vec13 = [_]Expectation{.{ .vector = &.{ int1, int3 } }};
+    try expect("[1 #_2 3]", &vec13);
+    try expect("[1 #_  2 3]", &vec13);
+    const list13 = [_]Expectation{.{ .list = &.{ int1, int3 } }};
+    try expect("(1 #_2 3)", &list13);
+    try expect("(1 #_  2 3)", &list13);
+    const set13 = [_]Expectation{.{ .set = &.{ int1, int3 } }};
+    try expect("#{1 #_2 3}", &set13);
+    try expect("#{1 #_  2 3}", &set13);
+    const map13 = [_]Expectation{.{ .map = &.{.{ int1, int3 }} }};
+    try expect("{1 #_2 3}", &map13);
+    try expect("{1 #_  2 3}", &map13);
+    const map12 = [_]Expectation{.{ .map = &.{.{ int1, int2 }} }};
+    try expect("{1 2 #_3}", &map12);
+    try expect("{1 2 #_  3}", &map12);
+    try expect("#_  #ns.a/tag :key", &.{});
+    try expect("#_#ns.a/tag :key", &.{});
+    try expect("#_ #_ #_ 1 2 3", &.{});
+}

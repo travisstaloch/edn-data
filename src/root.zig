@@ -19,6 +19,7 @@ pub const ParseError = error{
     SetDuplicateKey,
     HandlerParse,
     InvalidEscape,
+    EndOfMap,
 } ||
     Allocator.Error ||
     std.fmt.ParseIntError ||
@@ -866,10 +867,16 @@ fn parseMap(p: *Parser, comptime mode: ParseMode, result: ValueMap, result_wss: 
         }
 
         if (mode == .allocate) {
-            try parseValue(p, mode, result.keys[i..].ptr, result_wss[0][i..].ptr);
+            parseValue(p, mode, result.keys[i..].ptr, result_wss[0][i..].ptr) catch |e| switch (e) {
+                error.EndOfMap => break,
+                else => return e,
+            };
             try parseValue(p, mode, result.values[i..].ptr, result_wss[1][i..].ptr);
         } else {
-            try parseValue(p, mode, undefined, undefined);
+            parseValue(p, mode, undefined, undefined) catch |e| switch (e) {
+                error.EndOfMap => break,
+                else => return e,
+            };
             try parseValue(p, mode, undefined, undefined);
         }
     }
@@ -928,11 +935,25 @@ fn parseSet(
     return i;
 }
 
-// TODO
-fn parseDiscard(p: *Parser) !Value {
+fn parseDiscard(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) ParseError!Value {
     p.depth += 1;
     defer p.depth -= 1;
-    unreachable;
+    assert(p.peek(0) == '#');
+    assert(p.peek(1) == '_');
+    p.index += 2;
+    p.skipWsAndComments();
+    const ignored = try parseValueInner(p, mode, leading_ws);
+    debug("{s: <[1]}parseDiscard() ignored {2s}", .{ "", p.depth * 2, @tagName(ignored) });
+    const is_container = @intFromBool(@intFromEnum(ignored) >= @intFromEnum(Value.Tag.list));
+    p.index += is_container;
+
+    p.skipWsAndComments();
+    leading_ws.end = p.index;
+    var next_dummy_leading_ws = Token.init(p.index, undefined);
+    if (p.eos()) return error.Eof;
+    debug("{s: <[1]}parseDiscard() no eos", .{ "", p.depth * 2 });
+    const v = try parseValueInner(p, mode, &next_dummy_leading_ws);
+    return v;
 }
 
 fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Value {
@@ -946,9 +967,10 @@ fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Va
         '(' => .{ .list = try parseOrMeasureList(p, c, mode) },
         '[' => .{ .vector = try parseOrMeasureList(p, c, mode) },
         '{' => .{ .map = try parseOrMeasureMap(p, mode) },
+        '}' => return error.EndOfMap,
         '#' => if (p.peek(1)) |d| switch (d) {
             '{' => .{ .set = try parseOrMeasureSet(p, mode) },
-            '_' => try parseDiscard(p),
+            '_' => try parseDiscard(p, mode, leading_ws),
             else => blk: {
                 const sym = try parseSym(p, c);
                 // Upon encountering a tag, the reader will first read the
