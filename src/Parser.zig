@@ -14,7 +14,7 @@ options: edn.Options,
 depth: u8, // only used when logging
 measured: edn.Measured = .{},
 handlers: edn.TaggedElementHandler.Map,
-
+last_value_end: ?u32 = null,
 const Parser = @This();
 
 pub fn init(

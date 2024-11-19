@@ -20,6 +20,7 @@ pub const ParseError = error{
     HandlerParse,
     InvalidEscape,
     EndOfMap,
+    NoWhitespace,
 } ||
     Allocator.Error ||
     std.fmt.ParseIntError ||
@@ -622,7 +623,7 @@ fn err(_: *const Parser, comptime fmt: []const u8, args: anytype) ParseError {
 fn isSymChar(c: u8) bool {
     return switch (c) {
         'a'...'z', 'A'...'Z', '0'...'9' => true,
-        '/', '.', '*', '+', '!', '-', '_', '?', '$', '%', '&', '=', '<', '>' => true,
+        '/', '.', '*', '+', '!', '-', '_', '?', '$', '%', '&', '=', '<', '>', '#', ':' => true,
         else => false,
     };
 }
@@ -644,6 +645,7 @@ fn parseSym(p: *Parser, prefix: ?u8) !Value {
     //
 
     p.skipWhileFn(isSymChar);
+    p.index -= @intFromBool(p.src[p.index - 1] == '#');
     const slice = p.src[start..p.index];
     if (slice.len == 0) return error.SymEmpty;
     if (std.meta.stringToEnum(Value.Tag, slice)) |v| {
@@ -1019,11 +1021,12 @@ fn parseValue(
     comptime mode: ParseMode,
     result: [*]Value,
     whitespace_result: [*][2]Token,
-) !void {
+) ParseError!void {
     // track leading ws
     var leading_ws = Token.init(p.index, undefined);
     p.skipWsAndComments();
     leading_ws.end = p.index;
+    if (p.last_value_end == p.index) return error.NoWhitespace;
 
     const v = try parseValueInner(p, mode, &leading_ws);
 
@@ -1035,6 +1038,7 @@ fn parseValue(
     // trailing ws indludes any container closing chars such as ')', '}'
     var trailing_ws = Token.init(p.index, undefined);
     p.index += is_container;
+    p.last_value_end = p.index;
     p.skipWsAndComments();
     trailing_ws.end = p.index;
     if (p.options.whitespace == .include) {

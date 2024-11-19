@@ -233,8 +233,8 @@ test "eqluality" {
         \\(nil true false 1 1.0 \c ns/name {:a 1 :b 2 :c 3} #{:a 1 "foo"} (:a 1 "foo"))
     ;
     try testEql(s, s, 23, 23);
-    inline for (test_srcs) |asrc| {
-        inline for (test_srcs) |bsrc| {
+    for (test_srcs) |asrc| {
+        for (test_srcs) |bsrc| {
             if (std.mem.eql(u8, asrc[0], bsrc[0]))
                 try testEql(asrc[0], bsrc[0], asrc[1], bsrc[1])
             else
@@ -249,7 +249,7 @@ test "measure" {
     try testing.expectEqual(4, measured.whitespaces);
 }
 
-test "no ws" {
+test "exclude whitespace" {
     // TODO - more coverage
     const res = try edn.parseFromSliceAlloc(talloc, "a b c", .{ .whitespace = .exclude }, .{});
     defer res.deinit(talloc);
@@ -306,10 +306,12 @@ test "ParseResult find()" {
 test "comptime parse" {
     inline for (test_srcs) |src_len| {
         const src = src_len[0];
-        comptime {
-            const res = try edn.parseFromSliceComptime(src, .{}, .{ .eval_branch_quota = 4000 });
-            try testing.expectEqualStrings(src, std.fmt.comptimePrint("{}", .{edn.fmtParseResult(res, src)}));
-        }
+        const fmt = comptime blk: {
+            const res = edn.parseFromSliceComptime(src, .{}, .{ .eval_branch_quota = 4000 }) catch unreachable;
+            const final = std.fmt.comptimePrint("{}", .{edn.fmtParseResult(res, src)});
+            break :blk final[0..final.len].*;
+        };
+        try testing.expectEqualStrings(src, &fmt);
     }
 }
 
@@ -473,8 +475,8 @@ fn expect(src: []const u8, expected: []const Expectation) !void {
     }
 }
 
-fn quote(comptime s: []const u8) []const u8 {
-    return "\"" ++ s ++ "\"";
+inline fn quote(comptime s: []const u8) []const u8 {
+    return comptime "\"" ++ s ++ "\"";
 }
 
 const str_hi = Expectation{ .string = quote("hi") };
@@ -517,23 +519,26 @@ test "string parsing" {
     , &.{.{ .string = 
     \\"\""
     }});
-    try expect(
+    try testing.expectError(error.NoWhitespace, expect(
         \\hi"hi"
+    , &.{}));
+    try expect(
+        \\hi "hi"
     , &.{ sym_hi, str_hi });
     try expect(
-        \\true"hi"
+        \\true "hi"
     , &.{ .true, str_hi });
     try expect(
-        \\"hi"true
+        \\"hi" true
     , &.{ str_hi, .true });
     try expect(
-        \\123"hi"
+        \\123 "hi"
     , &.{ .{ .integer = 123 }, str_hi });
     try expect(
-        \\"hi"123
+        \\"hi" 123
     , &.{ str_hi, .{ .integer = 123 } });
     try expect(
-        \\"hi""hi"
+        \\"hi" "hi"
     , &.{ str_hi, str_hi });
 
     try testing.expectError(error.InvalidString, expect(
@@ -545,7 +550,7 @@ test "string parsing" {
     try testing.expectError(error.InvalidString, expect(
         \\"\\
     , &.{}));
-    try testing.expectError(error.InvalidString, expect(
+    try testing.expectError(error.NoWhitespace, expect(
         \\"\\""
     , &.{}));
 }
@@ -576,10 +581,10 @@ test "char parsing" {
         \\\u1F590
     , &.{.{ .character = '🖐' }});
     try expect(
-        \\\u"hi"
+        \\\u "hi"
     , &.{ .{ .character = 'u' }, str_hi });
     try expect(
-        \\\u1F590"hi"
+        \\\u1F590 "hi"
     , &.{ .{ .character = '🖐' }, str_hi });
 
     try testing.expectError(error.InvalidChar, expect(
@@ -613,6 +618,8 @@ test "symbol parsing" {
     try expect("=", &.{.{ .symbol = "=" }});
     try expect("even?", &.{.{ .symbol = "even?" }});
     try expect("even? ", &.{.{ .symbol = "even?" }});
+    try expect("a#b", &.{.{ .symbol = "a#b" }});
+    try expect("a:b", &.{.{ .symbol = "a:b" }});
 }
 
 test "keyword parsing" {
@@ -633,13 +640,13 @@ test "vector parsing" {
         .{ .vector = &.{ .true, .{ .vector = &.{ str_one, .{ .vector = &.{ str_two, .nil } } } } } },
     });
     try expect("[[] [] ]", &.{.{ .vector = &.{ empty_vec, empty_vec } }});
-    try expect("[[][]]", &.{.{ .vector = &.{ empty_vec, empty_vec } }});
-    try expect("[hi[]]", &.{.{ .vector = &.{ sym_hi, empty_vec } }});
-    try expect("[[]hi]", &.{.{ .vector = &.{ empty_vec, sym_hi } }});
-    try expect("[true[]]", &.{.{ .vector = &.{ .true, empty_vec } }});
-    try expect("[[]true]", &.{.{ .vector = &.{ empty_vec, .true } }});
-    try expect("[\"hi\"[]]", &.{.{ .vector = &.{ str_hi, empty_vec } }});
-    try expect("[[]\"hi\"]", &.{.{ .vector = &.{ empty_vec, str_hi } }});
+    try expect("[[] []]", &.{.{ .vector = &.{ empty_vec, empty_vec } }});
+    try expect("[hi []]", &.{.{ .vector = &.{ sym_hi, empty_vec } }});
+    try expect("[[] hi]", &.{.{ .vector = &.{ empty_vec, sym_hi } }});
+    try expect("[true []]", &.{.{ .vector = &.{ .true, empty_vec } }});
+    try expect("[[] true]", &.{.{ .vector = &.{ empty_vec, .true } }});
+    try expect("[\"hi\" []]", &.{.{ .vector = &.{ str_hi, empty_vec } }});
+    try expect("[[] \"hi\"]", &.{.{ .vector = &.{ empty_vec, str_hi } }});
 }
 
 test "list parsing" {
@@ -653,12 +660,12 @@ test "list parsing" {
     try expect("(true  (\"one\" (\"two\", nil )))", &.{
         .{ .list = &.{ .true, .{ .list = &.{ str_one, .{ .list = &.{ str_two, .nil } } } } } },
     });
-    try expect("(hi())", &.{.{ .list = &.{ sym_hi, empty_list } }});
-    try expect("(()hi)", &.{.{ .list = &.{ empty_list, sym_hi } }});
-    try expect("(false())", &.{.{ .list = &.{ .false, empty_list } }});
-    try expect("(()false)", &.{.{ .list = &.{ empty_list, .false } }});
-    try expect("(\"hi\"())", &.{.{ .list = &.{ str_hi, empty_list } }});
-    try expect("(()\"hi\")", &.{.{ .list = &.{ empty_list, str_hi } }});
+    try expect("(hi ())", &.{.{ .list = &.{ sym_hi, empty_list } }});
+    try expect("(() hi)", &.{.{ .list = &.{ empty_list, sym_hi } }});
+    try expect("(false ())", &.{.{ .list = &.{ .false, empty_list } }});
+    try expect("(() false)", &.{.{ .list = &.{ empty_list, .false } }});
+    try expect("(\"hi\" ())", &.{.{ .list = &.{ str_hi, empty_list } }});
+    try expect("(() \"hi\")", &.{.{ .list = &.{ empty_list, str_hi } }});
     try expect("(true  (\"one\" (\"two\", nil )))", &.{
         .{ .list = &.{ .true, .{ .list = &.{ str_one, .{ .list = &.{ str_two, .nil } } } } } },
     });
@@ -669,13 +676,9 @@ test "set parsing" {
     try expect("#{}", &.{empty_set});
     try expect("#{  }", &.{empty_set});
     try expect("#{\"one\"}", &.{.{ .set = &.{str_one} }});
-    try expect("#{\"one\" \"and two\"}", &.{.{
-        .set = &.{ str_one, str_and_two },
-    }});
+    try expect("#{\"one\" \"and two\"}", &.{.{ .set = &.{ str_one, str_and_two } }});
     try expect("#{true true}", &.{.{ .set = &.{ .true, .true } }});
-    try expect("#{true \"well, then.\"}", &.{.{
-        .set = &.{ .true, str_well },
-    }});
+    try expect("#{true \"well, then.\"}", &.{.{ .set = &.{ .true, str_well } }});
     try expect("#{true  #{\"one\" #{\"two\", nil }}}", &.{
         .{ .set = &.{ .true, .{ .set = &.{ str_one, .{ .set = &.{ str_two, .nil } } } } } },
     });
@@ -685,24 +688,12 @@ test "set parsing" {
     try expect("#{true  #{\"one\" #{\"two\", nil }}}", &.{
         .{ .set = &.{ .true, .{ .set = &.{ str_one, .{ .set = &.{ str_two, .nil } } } } } },
     });
-    try expect("#{hi#{}}", &.{.{
-        .set = &.{ sym_hi, empty_set },
-    }});
-    try expect("#{#{}hi}", &.{.{
-        .set = &.{ empty_set, sym_hi },
-    }});
-    try expect("#{true#{}}", &.{.{
-        .set = &.{ .true, empty_set },
-    }});
-    try expect("#{#{}true}", &.{.{
-        .set = &.{ empty_set, .true },
-    }});
-    try expect("#{\"hi\"#{}}", &.{.{
-        .set = &.{ str_hi, empty_set },
-    }});
-    try expect("#{#{}\"hi\"}", &.{.{
-        .set = &.{ empty_set, str_hi },
-    }});
+    try expect("#{hi #{}}", &.{.{ .set = &.{ sym_hi, empty_set } }});
+    try expect("#{#{} hi}", &.{.{ .set = &.{ empty_set, sym_hi } }});
+    try expect("#{true #{}}", &.{.{ .set = &.{ .true, empty_set } }});
+    try expect("#{#{} true}", &.{.{ .set = &.{ empty_set, .true } }});
+    try expect("#{\"hi\" #{}}", &.{.{ .set = &.{ str_hi, empty_set } }});
+    try expect("#{#{} \"hi\"}", &.{.{ .set = &.{ empty_set, str_hi } }});
 }
 
 test "map parsing" {
@@ -719,24 +710,12 @@ test "map parsing" {
     try expect("{\"a\"  {\"b\" {\"c\", 123}}}", &.{
         .{ .map = &.{.{ str_a, .{ .map = &.{.{ str_b, .{ .map = &.{.{ str_c, .{ .integer = 123 } }} } }} } }} },
     });
-    try expect("{hi{}}", &.{
-        .{ .map = &.{.{ sym_hi, empty_map }} },
-    });
-    try expect("{{}hi}", &.{
-        .{ .map = &.{.{ empty_map, sym_hi }} },
-    });
-    try expect("{false{}}", &.{
-        .{ .map = &.{.{ .false, empty_map }} },
-    });
-    try expect("{{}false}", &.{
-        .{ .map = &.{.{ empty_map, .false }} },
-    });
-    try expect("{\"hi\"{}}", &.{
-        .{ .map = &.{.{ str_hi, empty_map }} },
-    });
-    try expect("{{}\"hi\"}", &.{
-        .{ .map = &.{.{ empty_map, str_hi }} },
-    });
+    try expect("{hi {}}", &.{.{ .map = &.{.{ sym_hi, empty_map }} }});
+    try expect("{{} hi}", &.{.{ .map = &.{.{ empty_map, sym_hi }} }});
+    try expect("{false {}}", &.{.{ .map = &.{.{ .false, empty_map }} }});
+    try expect("{{} false}", &.{.{ .map = &.{.{ empty_map, .false }} }});
+    try expect("{\"hi\" {}}", &.{.{ .map = &.{.{ str_hi, empty_map }} }});
+    try expect("{{} \"hi\"}", &.{.{ .map = &.{.{ empty_map, str_hi }} }});
 }
 
 test "discard parsing" {
@@ -777,4 +756,62 @@ test "discard parsing" {
     try expect("#_  #ns.a/tag :key", &.{});
     try expect("#_#ns.a/tag :key", &.{});
     try expect("#_ #_ #_ 1 2 3", &.{});
+}
+
+test "no intermediate whitespace" {
+    const srcs_no_ws = [_][]const u8{
+        "a\"a\"",
+        "\"a\"a",
+        "1a",
+        "1.0a",
+        "a[]",
+        "[]a",
+        "a#{}",
+        "#{}a",
+        "a{}",
+        "{}a",
+        "\"a\":a",
+        ":a\"a\"",
+        "\"a\"1",
+        "1\"a\"",
+        "\"a\"1.0",
+        "1.0\"a\"",
+        "\"a\"[]",
+        "[]\"a\"",
+        "\"a\"#{}",
+        "#{}\"a\"",
+        "\"a\"{}",
+        "{}\"a\"",
+        "1:a",
+        "1.0:a",
+        ":a[]",
+        "[]:a",
+        ":a#{}",
+        "#{}:a",
+        ":a{}",
+        "{}:a",
+        "1[]",
+        "[]1",
+        "1#{}",
+        "#{}1",
+        "1{}",
+        "{}1",
+        "1.0[]",
+        "[]1.0",
+        "1.0#{}",
+        "#{}1.0",
+        "1.0{}",
+        "{}1.0",
+        "[]#{}",
+        "#{}[]",
+        "[]{}",
+        "{}[]",
+        "#{}{}",
+        "{}#{}",
+    };
+
+    for (srcs_no_ws) |src| {
+        const res = edn.parseFromSliceAlloc(talloc, src, .{}, .{});
+        try testing.expectError(error.NoWhitespace, res);
+    }
 }
