@@ -171,11 +171,11 @@ pub const MapContext = struct {
 };
 
 pub const TaggedElementHandler = struct {
-    // TODO add userdata
     pub const Fn = *const fn (
         value: Value,
         value_src: []const u8,
         src: []const u8,
+        userdata: ?*anyopaque,
     ) ParseError!Value;
 
     /// initialization format: {tag_name, handler_fn}.
@@ -255,10 +255,13 @@ pub const ParseResult = struct {
     }
 };
 
-pub const Options = packed struct(u8) {
-    whitespace: enum(u1) { include, exclude } = .include,
-    mode: ParseMode = .allocate,
-    _padding: u6 = undefined,
+pub const Options = struct {
+    flags: packed struct(u8) {
+        whitespace: enum(u1) { include, exclude } = .include,
+        mode: ParseMode = .allocate,
+        _padding: u6 = undefined,
+    } = .{},
+    userdata: ?*anyopaque = null,
 };
 
 pub const ParseMode = enum(u1) { allocate, measure };
@@ -271,7 +274,7 @@ pub const Measured = struct {
 
 pub fn measure(src: []const u8, options: Options, comptime comptime_options: ComptimeOptions) !Measured {
     var opts = options;
-    opts.mode = .measure;
+    opts.flags.mode = .measure;
     var p = Parser.init(src, opts, undefined, undefined, undefined, undefined, comptime_options.handlers);
     try parseValues(&p, .measure);
     return p.measured;
@@ -298,7 +301,7 @@ pub fn parseFromSliceBuf(
     try parseValues(&p, .allocate);
 
     assert(p.values == p.values_start + measured.values);
-    if (options.whitespace == .include) assert(p.ws == p.ws_start + measured.whitespaces);
+    if (options.flags.whitespace == .include) assert(p.ws == p.ws_start + measured.whitespaces);
     assert(p.values_start == values.ptr);
     assert(p.ws_start == ws.ptr);
 
@@ -316,7 +319,7 @@ pub fn parseFromSliceAlloc(
     comptime comptime_options: ComptimeOptions,
 ) !ParseResult {
     const measured = try measure(src, options, comptime_options);
-    if (options.mode == .measure) {
+    if (options.flags.mode == .measure) {
         var r: ParseResult = undefined;
         r.values.len = measured.values;
         r.whitespaces.len = measured.whitespaces;
@@ -354,8 +357,9 @@ pub inline fn parseFromSliceComptime(
 pub fn parseTypeFromSlice(
     comptime T: type,
     src: []const u8,
+    options: Options,
 ) !T {
-    var p = Parser.init(src, .{}, undefined, undefined, undefined, undefined, &.{});
+    var p = Parser.init(src, options, undefined, undefined, undefined, undefined, &.{});
     const t = try parseType(T, null, &p);
     p.skipWsAndComments();
     if (!p.eos()) return error.InvalidType;
@@ -400,6 +404,7 @@ fn parseType(
                     p.src[next_start..p.index],
                     p.src,
                     next,
+                    p.options.userdata,
                 );
             }
         }
@@ -1055,7 +1060,7 @@ fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Va
                 const next = try parseValueInner(p, mode, &next_dummy_leading_ws);
                 const v = if (p.handlers.get(sym.symbol.src(p.src))) |handler| v: {
                     const next_end = p.index;
-                    const v = try handler(next, p.src[next_start..next_end], p.src);
+                    const v = try handler(next, p.src[next_start..next_end], p.src, p.options.userdata);
                     break :v v;
                 } else v: {
                     break :v next;
@@ -1094,7 +1099,7 @@ fn parseValue(
     p.last_value_end = p.index;
     p.skipWsAndComments();
     trailing_ws.end = p.index;
-    if (p.options.whitespace == .include) {
+    if (p.options.flags.whitespace == .include) {
         if (mode == .measure) {
             p.measured.whitespaces += 1;
         } else {

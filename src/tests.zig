@@ -144,7 +144,7 @@ test "comments" {
 fn testParse(alloc: std.mem.Allocator, src: []const u8) !void {
     const result = try edn.parseFromSliceAlloc(alloc, src, .{}, .{});
     defer result.deinit(alloc);
-    const result2 = try edn.parseFromSliceAlloc(alloc, src, .{ .whitespace = .exclude }, .{});
+    const result2 = try edn.parseFromSliceAlloc(alloc, src, .{ .flags = .{ .whitespace = .exclude } }, .{});
     defer result2.deinit(alloc);
 }
 
@@ -251,7 +251,7 @@ test "measure" {
 
 test "exclude whitespace" {
     // TODO - more coverage
-    const res = try edn.parseFromSliceAlloc(talloc, "a b c", .{ .whitespace = .exclude }, .{});
+    const res = try edn.parseFromSliceAlloc(talloc, "a b c", .{ .flags = .{ .whitespace = .exclude } }, .{});
     defer res.deinit(talloc);
 }
 
@@ -259,7 +259,7 @@ test "ParseResult find()" {
     const src =
         \\(a b c {:a 1 :b 2 "foo" 3 ns/sym 4 5 5 \c 6})
     ;
-    const res = try edn.parseFromSliceAlloc(talloc, src, .{ .whitespace = .exclude }, .{});
+    const res = try edn.parseFromSliceAlloc(talloc, src, .{ .flags = .{ .whitespace = .exclude } }, .{});
     defer res.deinit(talloc);
     try testing.expectError(error.PathNotFound, res.find("1", src));
     try testing.expectError(error.PathNotFound, res.find("0//3//missing", src));
@@ -354,23 +354,23 @@ test "parse into struct" {
         \\}
     ;
 
-    try expectTestCase(try edn.parseTypeFromSlice(TestCase, src));
+    try expectTestCase(try edn.parseTypeFromSlice(TestCase, src, .{}));
     comptime {
         @setEvalBranchQuota(10000);
-        try expectTestCase(try edn.parseTypeFromSlice(TestCase, src));
+        try expectTestCase(try edn.parseTypeFromSlice(TestCase, src, .{}));
     }
 }
 
 test "missing fields and default values" {
     try testing.expectError(
         error.MissingFields,
-        edn.parseTypeFromSlice(struct { n: i8 }, "{}"),
+        edn.parseTypeFromSlice(struct { n: i8 }, "{}", .{}),
     );
     try testing.expectError(
         error.InvalidUnion,
-        edn.parseTypeFromSlice(union { n: i8 }, "{}"),
+        edn.parseTypeFromSlice(union { n: i8 }, "{}", .{}),
     );
-    const s = try edn.parseTypeFromSlice(struct { n: i8 = 42 }, "{}");
+    const s = try edn.parseTypeFromSlice(struct { n: i8 = 42 }, "{}", .{});
     try testing.expectEqual(42, s.n);
 }
 
@@ -386,20 +386,25 @@ test "tagged handler" {
             value: edn.Value,
             value_src: []const u8,
             whole_src: []const u8,
+            userdata: ?*anyopaque,
         ) edn.ParseError!edn.Value {
             _ = whole_src;
             _ = value;
             std.debug.assert(std.mem.eql(u8, value_src, datasrc));
+            const data: *u8 = @ptrCast(userdata orelse unreachable);
+            data.* = 10;
             return .{ .integer = 0 };
         }
     }.handleInst;
-    const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{
+    var userdata1: u8 = 0;
+    const res = try edn.parseFromSliceAlloc(talloc, src, .{ .userdata = &userdata1 }, .{
         .handlers = &.{.{ "#inst", handleInst }},
     });
     defer res.deinit(talloc);
     try testing.expectEqual(2, res.values[0].map.keys.len);
     try testing.expectEqual(.integer, std.meta.activeTag(res.values[0].map.values[1]));
     try testing.expectEqual(0, res.values[0].map.values[1].integer);
+    try testing.expectEqual(10, userdata1);
 
     const DateTime = struct { int: i128 };
     const Crux = struct {
@@ -412,28 +417,34 @@ test "tagged handler" {
             value_src: []const u8,
             whole_src: []const u8,
             value: edn.Value,
+            userdata: ?*anyopaque,
         ) edn.ParseError!T {
             _ = whole_src;
             _ = value_src;
             _ = value;
             switch (T) {
                 DateTime => {
-                    if (std.mem.eql(u8, tag_src, "#inst"))
+                    if (std.mem.eql(u8, tag_src, "#inst")) {
+                        const data: *u8 = @ptrCast(userdata orelse unreachable);
+                        data.* = 10;
                         return .{ .int = -1 };
+                    }
                 },
                 else => {},
             }
             return error.HandlerParse;
         }
     };
-    const crux = try edn.parseTypeFromSlice(Crux, src);
+    var userdata2: u8 = 0;
+    const crux = try edn.parseTypeFromSlice(Crux, src, .{ .userdata = &userdata2 });
     try testing.expectEqual(2, crux.@"crux.tx/tx-id");
     try testing.expectEqual(-1, crux.@"crux.tx/tx-time".int);
+    try testing.expectEqual(10, userdata2);
     const CruxNoHandler = struct {
         @"crux.tx/tx-id": u32,
         @"crux.tx/tx-time": DateTime,
     };
-    try testing.expectError(error.MissingHandler, edn.parseTypeFromSlice(CruxNoHandler, src));
+    try testing.expectError(error.MissingHandler, edn.parseTypeFromSlice(CruxNoHandler, src, .{}));
 }
 
 const Expectation = union(enum) {
