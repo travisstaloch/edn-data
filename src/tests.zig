@@ -408,6 +408,7 @@ const Expectation = union(enum) {
     nil,
     string: []const u8,
     symbol: []const u8,
+    float: []const u8,
     character: u21,
     integer: i128,
 };
@@ -423,8 +424,16 @@ fn expect(src: []const u8, expected: []const Expectation) !void {
             inline .string,
             .symbol,
             => |token, tag| try testing.expectEqualStrings(@field(ex, @tagName(tag)), token.src(src)),
-            inline .character, .integer => |int, tag| try testing.expectEqual(@field(ex, @tagName(tag)), int),
-            else => {},
+            .float,
+            => |float| try testing.expectEqualStrings(ex.float, float.src(src)),
+            .nil,
+            .true,
+            .false,
+            => {},
+            inline .character,
+            .integer,
+            => |int, tag| try testing.expectEqual(@field(ex, @tagName(tag)), int),
+            .keyword, .list, .vector, .map, .set => unreachable,
         }
     }
 }
@@ -536,4 +545,17 @@ test "int parsing" {
     try expect("+3", &.{.{ .integer = 3 }});
     try expect("-0", &.{.{ .integer = 0 }});
     try expect("-12", &.{.{ .integer = -12 }});
+}
+
+test "float parsing" {
+    try expect("928.764", &.{.{ .float = "928.764" }});
+    try expect("1001.1", &.{.{ .float = "1001.1" }});
+    try expect("-8.74", &.{.{ .float = "-8.74" }});
+    try expect("2.1e5", &.{.{ .float = "2.1e5" }});
+    try expect("2.1E5", &.{.{ .float = "2.1E5" }});
+    try expect("22.1e+2", &.{.{ .float = "22.1e+2" }});
+    try expect("22.1E+2", &.{.{ .float = "22.1E+2" }});
+    try expect("5.12e-3", &.{.{ .float = "5.12e-3" }});
+    try expect("5.12E-3", &.{.{ .float = "5.12E-3" }});
+    try expect("1001.00100e10", &.{.{ .float = "1001.00100e10" }});
 }
