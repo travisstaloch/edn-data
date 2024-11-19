@@ -16,9 +16,18 @@ pub const ParseError = error{
     MapDuplicateKey,
     SetDuplicateKey,
     HandlerParse,
+    MissingHandler,
     InvalidEscape,
     EndOfMap,
     MissingWhitespaceBetweenValues,
+    InvalidStruct,
+    InvalidStructField,
+    MissingFields,
+    InvalidUnion,
+    InvalidBool,
+    InvalidType,
+    InvalidArray,
+    InvalidEnum,
 } ||
     Allocator.Error ||
     std.fmt.ParseIntError ||
@@ -162,6 +171,7 @@ pub const MapContext = struct {
 };
 
 pub const TaggedElementHandler = struct {
+    // TODO add userdata
     pub const Fn = *const fn (
         value: Value,
         value_src: []const u8,
@@ -341,13 +351,12 @@ pub inline fn parseFromSliceComptime(
     }
 }
 
-// TODO support tagged element handlers
 pub fn parseTypeFromSlice(
     comptime T: type,
     src: []const u8,
 ) !T {
     var p = Parser.init(src, .{}, undefined, undefined, undefined, undefined, &.{});
-    const t = try parseType(T, &p);
+    const t = try parseType(T, null, &p);
     p.skipWsAndComments();
     if (!p.eos()) return error.InvalidType;
     return t;
@@ -357,11 +366,46 @@ inline fn unsupportedType(comptime T: type) noreturn {
     @compileError("unsupported type '" ++ @typeName(T) ++ "'");
 }
 
+inline fn isContainer(T: type) bool {
+    comptime {
+        const info = @typeInfo(T);
+        return info == .@"struct" or info == .@"union" or info == .@"enum" or info == .@"opaque";
+    }
+}
+
 fn parseType(
     comptime T: type,
+    comptime P: ?type, // Parent type
     p: *Parser,
-) !T {
-    // TODO check for user defined ednParse()
+) ParseError!T {
+    if (isContainer(T) and @hasDecl(T, "ednParse")) {
+        // TODO add ednParse() tests
+        return T.ednParse(p);
+    }
+
+    if (p.peek(0) == '#') {
+        // support tagged element handlers
+        // TODO skip discards
+        const sym = try parseSym(p);
+
+        p.skipWsAndComments();
+        const next_start = p.index;
+        var next_dummy_leading_ws = Token.init(p.index, undefined);
+        const next = try parseValueInner(p, .measure, &next_dummy_leading_ws);
+        if (P) |Parent| {
+            if (@hasDecl(Parent, "ednTagHandler")) {
+                return Parent.ednTagHandler(
+                    T,
+                    sym.symbol.src(p.src),
+                    p.src[next_start..p.index],
+                    p.src,
+                    next,
+                );
+            }
+        }
+        return err(p, "no handler for tag '{s}'", .{sym.symbol.src(p.src)}, error.MissingHandler);
+    }
+
     return switch (@typeInfo(T)) {
         .@"struct" => parseStruct(T, p),
         .@"union" => u: {
@@ -377,8 +421,7 @@ fn parseType(
                         return error.InvalidStructField;
                 },
                 else => {
-                    err(p, "unexpected '{c}'", .{c}) catch {};
-                    return error.InvalidUnion;
+                    return err(p, "unexpected '{c}'", .{c}, error.InvalidUnion);
                 },
             };
             debug("{s: <[1]}parseType union key {2s}", .{ "", p.depth * 2, @tagName(field) });
@@ -387,7 +430,7 @@ fn parseType(
                 inline else => |tag| @unionInit(
                     T,
                     @tagName(tag),
-                    try parseType(std.meta.FieldType(T, tag), p),
+                    try parseType(std.meta.FieldType(T, tag), T, p),
                 ),
             };
             if (p.peek(0) != '}') return error.InvalidUnion;
@@ -402,7 +445,7 @@ fn parseType(
             } else if (mem.startsWith(u8, rest, "false")) {
                 p.index += 5;
                 break :blk false;
-            } else break :blk error.InvaidBool;
+            } else break :blk error.InvalidBool;
         },
         .int => blk: {
             const n = try parseNum(p);
@@ -433,7 +476,7 @@ fn parseType(
                 p.index += 3;
                 break :blk null;
             }
-            break :blk try parseType(i.child, p);
+            break :blk try parseType(i.child, P, p);
         },
         .@"enum" => blk: {
             const key = try parseKeyword(p);
@@ -448,7 +491,7 @@ fn parseType(
             p.index += 1;
             for (&a) |*ele| {
                 p.skipWsAndComments();
-                ele.* = try parseType(i.child, p);
+                ele.* = try parseType(i.child, P, p);
             }
             p.skipWsAndComments();
             if (p.peek(0) != ']') return error.InvalidArray;
@@ -459,10 +502,7 @@ fn parseType(
     };
 }
 
-fn parseStruct(
-    comptime T: type,
-    p: *Parser,
-) !T {
+fn parseStruct(comptime T: type, p: *Parser) !T {
     const Fe = std.meta.FieldEnum(T);
     var seen_fields = std.enums.EnumSet(Fe).initEmpty();
 
@@ -489,16 +529,13 @@ fn parseStruct(
                 break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.src)[1..]) orelse
                     return error.InvalidStructField;
             },
-            else => {
-                err(p, "unexpected '{c}'", .{c}) catch {};
-                return error.InvalidStruct;
-            },
+            else => return err(p, "unexpected '{c}'", .{c}, error.InvalidStruct),
         };
         debug("{s: <[1]}parseStruct key {2s}", .{ "", p.depth * 2, @tagName(field) });
         p.skipWsAndComments();
         switch (field) {
             inline else => |tag| {
-                @field(t, @tagName(tag)) = try parseType(std.meta.FieldType(T, tag), p);
+                @field(t, @tagName(tag)) = try parseType(std.meta.FieldType(T, tag), T, p);
             },
         }
         seen_fields.insert(field);
@@ -513,7 +550,7 @@ fn parseStruct(
                 @field(t, @tagName(tag)) = d.*;
                 seen_fields.insert(tag);
             } else {
-                err(p, "missing field '{s}'", .{@tagName(tag)}) catch {};
+                err(p, "missing field '{s}'", .{@tagName(tag)}, error.MissingFields) catch {};
             }
         },
     };
@@ -611,11 +648,11 @@ fn formatValue(
         try writer.writeAll(data.parse_result.whitespaces[data.ws_index][1].src(data.src));
 }
 
-fn err(_: *const Parser, comptime fmt: []const u8, args: anytype) ParseError {
+fn err(_: *const Parser, comptime fmt: []const u8, args: anytype, e: ParseError) ParseError {
     if (@inComptime()) {
         @compileError(std.fmt.comptimePrint(fmt, args));
     } else if (!@import("builtin").is_test) log.err(fmt, args);
-    return error.Parse;
+    return e;
 }
 
 fn isSymChar(c: u8) bool {
@@ -627,22 +664,22 @@ fn isSymChar(c: u8) bool {
 }
 
 fn validateSym(slice: []const u8) !void {
+    debug("validateSym({s})", .{slice});
     switch (slice[0]) {
         '0'...'9' => return error.InvalidSymbol,
         '-', '+', '.' => if (slice.len > 1 and std.ascii.isDigit(slice[1]))
             return error.InvalidSymbol,
         '#', ':' => return error.InvalidSymbol,
-        // '\'' => unreachable,
         else => {},
     }
 }
 
-fn parseSym(p: *Parser, prefix: ?u8) !Value {
+fn parseSym(p: *Parser) !Value {
     debug("{s: <[1]}parseSym()", .{ "", p.depth * 2 });
+    assert(!std.ascii.isDigit(p.peek(0).?));
 
-    const tagged = prefix == '#';
+    const tagged = p.peek(0) == '#' or p.peek(0) == ':';
     const start = p.index;
-    p.index += @intFromBool(tagged);
     // Symbols are used to represent identifiers, and should map to something
     // other than strings, if possible.
     //
@@ -691,6 +728,7 @@ fn parseSym(p: *Parser, prefix: ?u8) !Value {
         if (i + 1 == slice.len) return error.InvalidSymbol;
         try validateSym(slice[i + 1 ..]);
     } else try validateSym(slice[@intFromBool(tagged)..]);
+
     return .{ .symbol = .init(start, p.index) };
 }
 
@@ -775,8 +813,7 @@ fn parseKeyword(p: *Parser) !Value {
     debug("{s: <[1]}parseKeyword()", .{ "", p.depth * 2 });
     assert(p.peek(0) == ':');
     const start = p.index;
-    p.index += 1;
-    var sym = try parseSym(p, null);
+    var sym = try parseSym(p);
     sym.symbol.start = start;
     return .{ .keyword = sym.symbol };
 }
@@ -990,7 +1027,7 @@ fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Va
             '{' => .{ .set = try parseOrMeasureSet(p, mode) },
             '_' => try parseDiscard(p, mode, leading_ws),
             else => blk: {
-                const sym = try parseSym(p, c);
+                const sym = try parseSym(p);
                 // Upon encountering a tag, the reader will first read the
                 // next element (which may itself be or comprise other
                 // tagged elements), then pass the result to the
@@ -1025,11 +1062,11 @@ fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Va
                 };
                 break :blk v;
             },
-        } else return err(p, "unexpected end of file '{c}'", .{c}),
+        } else return err(p, "unexpected end of file '{c}'", .{c}, error.Eof),
         else => return if (isSymChar(c))
-            try parseSym(p, null)
+            try parseSym(p)
         else
-            err(p, "unexpected character '{c}'", .{c}),
+            err(p, "unexpected character '{c}'", .{c}, error.Parse),
     };
 }
 fn parseValue(

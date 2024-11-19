@@ -381,27 +381,59 @@ test "tagged handler" {
     const src =
         \\{:crux.tx/tx-id 2 :crux.tx/tx-time #inst 
     ++ datasrc ++ "}";
+    const handleInst = struct {
+        fn handleInst(
+            value: edn.Value,
+            value_src: []const u8,
+            whole_src: []const u8,
+        ) edn.ParseError!edn.Value {
+            _ = whole_src;
+            _ = value;
+            std.debug.assert(std.mem.eql(u8, value_src, datasrc));
+            return .{ .integer = 0 };
+        }
+    }.handleInst;
     const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{
-        .handlers = &.{.{
-            "#inst",
-            struct {
-                fn handleInst(
-                    value: edn.Value,
-                    value_src: []const u8,
-                    whole_src: []const u8,
-                ) edn.ParseError!edn.Value {
-                    _ = whole_src;
-                    _ = value;
-                    std.debug.assert(std.mem.eql(u8, value_src, datasrc));
-                    return .{ .integer = 0 };
-                }
-            }.handleInst,
-        }},
+        .handlers = &.{.{ "#inst", handleInst }},
     });
     defer res.deinit(talloc);
     try testing.expectEqual(2, res.values[0].map.keys.len);
     try testing.expectEqual(.integer, std.meta.activeTag(res.values[0].map.values[1]));
     try testing.expectEqual(0, res.values[0].map.values[1].integer);
+
+    const DateTime = struct { int: i128 };
+    const Crux = struct {
+        @"crux.tx/tx-id": u32,
+        @"crux.tx/tx-time": DateTime,
+
+        pub fn ednTagHandler(
+            T: type,
+            tag_src: []const u8,
+            value_src: []const u8,
+            whole_src: []const u8,
+            value: edn.Value,
+        ) edn.ParseError!T {
+            _ = whole_src;
+            _ = value_src;
+            _ = value;
+            switch (T) {
+                DateTime => {
+                    if (std.mem.eql(u8, tag_src, "#inst"))
+                        return .{ .int = -1 };
+                },
+                else => {},
+            }
+            return error.HandlerParse;
+        }
+    };
+    const crux = try edn.parseTypeFromSlice(Crux, src);
+    try testing.expectEqual(2, crux.@"crux.tx/tx-id");
+    try testing.expectEqual(-1, crux.@"crux.tx/tx-time".int);
+    const CruxNoHandler = struct {
+        @"crux.tx/tx-id": u32,
+        @"crux.tx/tx-time": DateTime,
+    };
+    try testing.expectError(error.MissingHandler, edn.parseTypeFromSlice(CruxNoHandler, src));
 }
 
 const Expectation = union(enum) {
