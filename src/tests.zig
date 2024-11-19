@@ -413,6 +413,7 @@ const Expectation = union(enum) {
     character: u21,
     integer: i128,
     vector: []const Expectation,
+    list: []const Expectation,
 };
 
 fn expectOne(ex: Expectation, actual: edn.Value, src: []const u8) !void {
@@ -437,7 +438,13 @@ fn expectOne(ex: Expectation, actual: edn.Value, src: []const u8) !void {
                 try expectOne(e, a, src);
             }
         },
-        .list, .map, .set => unreachable,
+        .list => |v| {
+            try testing.expectEqual(ex.list.len, v.len);
+            for (ex.list, v) |e, a| {
+                try expectOne(e, a, src);
+            }
+        },
+        .map, .set => unreachable,
     }
 }
 
@@ -455,11 +462,18 @@ fn quote(comptime s: []const u8) []const u8 {
     return "\"" ++ s ++ "\"";
 }
 
+const str_hi = Expectation{ .string = quote("hi") };
+const str_one = Expectation{ .string = quote("one") };
+const str_two = Expectation{ .string = quote("two") };
+const str_and_two = Expectation{ .string = quote("and two") };
+const str_well = Expectation{ .string = quote("well, then.") };
+const sym_hi = Expectation{ .symbol = "hi" };
+
 test "string parsing" {
     try expect(
         \\""
     , &.{.{ .string = "\"\"" }});
-    try expect("\"hi\"", &.{.{ .string = quote("hi") }});
+    try expect("\"hi\"", &.{str_hi});
     try expect(
         \\"hi there"
     , &.{.{ .string = quote("hi there") }});
@@ -487,22 +501,22 @@ test "string parsing" {
     }});
     try expect(
         \\hi"hi"
-    , &.{ .{ .symbol = "hi" }, .{ .string = quote("hi") } });
+    , &.{ sym_hi, str_hi });
     try expect(
         \\true"hi"
-    , &.{ .true, .{ .string = quote("hi") } });
+    , &.{ .true, str_hi });
     try expect(
         \\"hi"true
-    , &.{ .{ .string = quote("hi") }, .true });
+    , &.{ str_hi, .true });
     try expect(
         \\123"hi"
-    , &.{ .{ .integer = 123 }, .{ .string = quote("hi") } });
+    , &.{ .{ .integer = 123 }, str_hi });
     try expect(
         \\"hi"123
-    , &.{ .{ .string = quote("hi") }, .{ .integer = 123 } });
+    , &.{ str_hi, .{ .integer = 123 } });
     try expect(
         \\"hi""hi"
-    , &.{ .{ .string = quote("hi") }, .{ .string = quote("hi") } });
+    , &.{ str_hi, str_hi });
 
     try testing.expectError(error.InvalidString, expect(
         \\"
@@ -545,10 +559,10 @@ test "char parsing" {
     , &.{.{ .character = '🖐' }});
     try expect(
         \\\u"hi"
-    , &.{ .{ .character = 'u' }, .{ .string = quote("hi") } });
+    , &.{ .{ .character = 'u' }, str_hi });
     try expect(
         \\\u1F590"hi"
-    , &.{ .{ .character = '🖐' }, .{ .string = quote("hi") } });
+    , &.{ .{ .character = '🖐' }, str_hi });
 
     try testing.expectError(error.InvalidChar, expect(
         \\\
@@ -593,22 +607,41 @@ test "vector parsing" {
     const empty_vec = Expectation{ .vector = &.{} };
     try expect("[]", &.{empty_vec});
     try expect("[  ]", &.{empty_vec});
-    try expect("[\"one\"]", &.{.{ .vector = &.{.{ .string = quote("one") }} }});
-    try expect("[\"one\" \"and two\"]", &.{.{ .vector = &.{ .{ .string = quote("one") }, .{ .string = quote("and two") } } }});
+    try expect("[\"one\"]", &.{.{ .vector = &.{str_one} }});
+    try expect("[\"one\" \"and two\"]", &.{.{ .vector = &.{ str_one, str_and_two } }});
     try expect("[true true]", &.{.{ .vector = &.{ .true, .true } }});
-    try expect("[true \"well, then.\"]", &.{.{ .vector = &.{ .true, .{ .string = quote("well, then.") } } }});
-    try expect("[true  [\"one\" [\"two\", nil ]]]", &.{.{ .vector = &.{
-        .true, .{ .vector = &.{
-            .{ .string = quote("one") },
-            .{ .vector = &.{ .{ .string = quote("two") }, .nil } },
-        } },
-    } }});
+    try expect("[true \"well, then.\"]", &.{.{ .vector = &.{ .true, str_well } }});
+    try expect("[true  [\"one\" [\"two\", nil ]]]", &.{
+        .{ .vector = &.{ .true, .{ .vector = &.{ str_one, .{ .vector = &.{ str_two, .nil } } } } } },
+    });
     try expect("[[] [] ]", &.{.{ .vector = &.{ empty_vec, empty_vec } }});
     try expect("[[][]]", &.{.{ .vector = &.{ empty_vec, empty_vec } }});
-    try expect("[hi[]]", &.{.{ .vector = &.{ .{ .symbol = "hi" }, empty_vec } }});
-    try expect("[[]hi]", &.{.{ .vector = &.{ empty_vec, .{ .symbol = "hi" } } }});
+    try expect("[hi[]]", &.{.{ .vector = &.{ sym_hi, empty_vec } }});
+    try expect("[[]hi]", &.{.{ .vector = &.{ empty_vec, sym_hi } }});
     try expect("[true[]]", &.{.{ .vector = &.{ .true, empty_vec } }});
     try expect("[[]true]", &.{.{ .vector = &.{ empty_vec, .true } }});
-    try expect("[\"hi\"[]]", &.{.{ .vector = &.{ .{ .string = quote("hi") }, empty_vec } }});
-    try expect("[[]\"hi\"]", &.{.{ .vector = &.{ empty_vec, .{ .string = quote("hi") } } }});
+    try expect("[\"hi\"[]]", &.{.{ .vector = &.{ str_hi, empty_vec } }});
+    try expect("[[]\"hi\"]", &.{.{ .vector = &.{ empty_vec, str_hi } }});
+}
+
+test "list parsing" {
+    const empty_list = Expectation{ .list = &.{} };
+    try expect("()", &.{empty_list});
+    try expect("(  )", &.{empty_list});
+    try expect("(\"one\")", &.{.{ .list = &.{str_one} }});
+    try expect("(\"one\" \"and two\")", &.{.{ .list = &.{ str_one, str_and_two } }});
+    try expect("(true true)", &.{.{ .list = &.{ .true, .true } }});
+    try expect("(true \"well, then.\")", &.{.{ .list = &.{ .true, str_well } }});
+    try expect("(true  (\"one\" (\"two\", nil )))", &.{
+        .{ .list = &.{ .true, .{ .list = &.{ str_one, .{ .list = &.{ str_two, .nil } } } } } },
+    });
+    try expect("(hi())", &.{.{ .list = &.{ sym_hi, empty_list } }});
+    try expect("(()hi)", &.{.{ .list = &.{ empty_list, sym_hi } }});
+    try expect("(false())", &.{.{ .list = &.{ .false, empty_list } }});
+    try expect("(()false)", &.{.{ .list = &.{ empty_list, .false } }});
+    try expect("(\"hi\"())", &.{.{ .list = &.{ str_hi, empty_list } }});
+    try expect("(()\"hi\")", &.{.{ .list = &.{ empty_list, str_hi } }});
+    try expect("(true  (\"one\" (\"two\", nil )))", &.{
+        .{ .list = &.{ .true, .{ .list = &.{ str_one, .{ .list = &.{ str_two, .nil } } } } } },
+    });
 }
