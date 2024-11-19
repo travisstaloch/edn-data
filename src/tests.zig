@@ -519,7 +519,7 @@ test "string parsing" {
     , &.{.{ .string = 
     \\"\""
     }});
-    try testing.expectError(error.NoWhitespace, expect(
+    try testing.expectError(error.MissingWhitespaceBetweenValues, expect(
         \\hi"hi"
     , &.{}));
     try expect(
@@ -550,7 +550,7 @@ test "string parsing" {
     try testing.expectError(error.InvalidString, expect(
         \\"\\
     , &.{}));
-    try testing.expectError(error.NoWhitespace, expect(
+    try testing.expectError(error.MissingWhitespaceBetweenValues, expect(
         \\"\\""
     , &.{}));
 }
@@ -619,7 +619,25 @@ test "symbol parsing" {
     try expect("even?", &.{.{ .symbol = "even?" }});
     try expect("even? ", &.{.{ .symbol = "even?" }});
     try expect("a#b", &.{.{ .symbol = "a#b" }});
+    try expect("a#", &.{.{ .symbol = "a#" }});
     try expect("a:b", &.{.{ .symbol = "a:b" }});
+    try expect("a:", &.{.{ .symbol = "a:" }});
+    try expect("/", &.{.{ .symbol = "/" }});
+    try expect("a/a#", &.{.{ .symbol = "a/a#" }});
+    try expect("a/a:", &.{.{ .symbol = "a/a:" }});
+
+    try testing.expectError(error.InvalidSymbol, expect("a/b/c", &.{}));
+    try testing.expectError(error.InvalidSymbol, expect("a/", &.{}));
+    try testing.expectError(error.InvalidSymbol, expect("/a", &.{}));
+    try testing.expectError(error.InvalidSymbol, expect("a/#a", &.{}));
+    try testing.expectError(error.InvalidSymbol, expect("a/:a", &.{}));
+    try testing.expectError(error.MissingWhitespaceBetweenValues, expect("-0a", &.{}));
+    try testing.expectError(error.MissingWhitespaceBetweenValues, expect("+0a", &.{}));
+    try testing.expectError(error.InvalidSymbol, expect(".0a", &.{}));
+    try testing.expectError(error.InvalidSymbol, expect("##a", &.{}));
+    try testing.expectError(error.InvalidSymbol, expect("#:a", &.{}));
+    try testing.expectError(error.InvalidSymbol, expect("::a", &.{}));
+    try testing.expectError(error.InvalidSymbol, expect(":#a", &.{}));
 }
 
 test "keyword parsing" {
@@ -812,6 +830,6 @@ test "no intermediate whitespace" {
 
     for (srcs_no_ws) |src| {
         const res = edn.parseFromSliceAlloc(talloc, src, .{}, .{});
-        try testing.expectError(error.NoWhitespace, res);
+        try testing.expectError(error.MissingWhitespaceBetweenValues, res);
     }
 }

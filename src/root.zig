@@ -12,15 +12,13 @@ pub const ParseError = error{
     Eof,
     InvalidChar,
     InvalidString,
-    SymEmpty,
-    SymInvalidFirstChar,
-    SymIsDigit,
+    InvalidSymbol,
     MapDuplicateKey,
     SetDuplicateKey,
     HandlerParse,
     InvalidEscape,
     EndOfMap,
-    NoWhitespace,
+    MissingWhitespaceBetweenValues,
 } ||
     Allocator.Error ||
     std.fmt.ParseIntError ||
@@ -628,6 +626,17 @@ fn isSymChar(c: u8) bool {
     };
 }
 
+fn validateSym(slice: []const u8) !void {
+    switch (slice[0]) {
+        '0'...'9' => return error.InvalidSymbol,
+        '-', '+', '.' => if (slice.len > 1 and std.ascii.isDigit(slice[1]))
+            return error.InvalidSymbol,
+        '#', ':' => return error.InvalidSymbol,
+        // '\'' => unreachable,
+        else => {},
+    }
+}
+
 fn parseSym(p: *Parser, prefix: ?u8) !Value {
     debug("{s: <[1]}parseSym()", .{ "", p.depth * 2 });
 
@@ -644,10 +653,23 @@ fn parseSym(p: *Parser, prefix: ?u8) !Value {
     // character.
     //
 
-    p.skipWhileFn(isSymChar);
-    p.index -= @intFromBool(p.src[p.index - 1] == '#');
+    // / has special meaning in symbols. It can be used once only in the middle of a
+    // symbol to separate the prefix (often a namespace) from the name, e.g.
+    // my-namespace/foo. / by itself is a legal symbol, but otherwise neither the
+    // prefix nor the name part can be empty when the symbol contains /.
+    var slash_index: ?u32 = null;
+    while (p.peek(0)) |c| {
+        if (!isSymChar(c)) break;
+        if (c == '/') {
+            if (slash_index != null) return error.InvalidSymbol;
+            slash_index = p.index - start;
+        }
+        p.index += 1;
+    }
+
     const slice = p.src[start..p.index];
-    if (slice.len == 0) return error.SymEmpty;
+    if (slice.len == 0) return error.InvalidSymbol;
+
     if (std.meta.stringToEnum(Value.Tag, slice)) |v| {
         switch (v) {
             inline .nil, .true, .false => |tag| {
@@ -656,25 +678,19 @@ fn parseSym(p: *Parser, prefix: ?u8) !Value {
             else => {},
         }
     }
-    switch (slice[@intFromBool(tagged)]) {
-        '0'...'9' => return error.SymIsDigit,
-        '-', '+', '.' => if (slice.len > 1 and std.ascii.isDigit(slice[1]))
-            return error.SymIsDigit,
-        '#', ':' => return error.SymInvalidFirstChar,
-        '\'' => unreachable,
-        else => {},
-    }
-    // TODO
-    //
-    // / has special meaning in symbols. It can be used once only in the middle of a
-    // symbol to separate the prefix (often a namespace) from the name, e.g.
-    // my-namespace/foo. / by itself is a legal symbol, but otherwise neither the
-    // prefix nor the name part can be empty when the symbol contains /.
-    //
-    // If a symbol has a prefix and /, the following name component should follow the
-    // first-character restrictions for symbols as a whole. This is to avoid ambiguity
-    // in reading contexts where prefixes might be presumed as implicitly included
-    // namespaces and elided thereafter.
+
+    if (slash_index) |i| blk: {
+        assert(slice[i] == '/');
+        if (slice.len == 1) break :blk;
+        if (i == 0 or i + 1 == slice.len) return error.InvalidSymbol;
+        try validateSym(slice[0..i][@intFromBool(tagged)..]);
+        // If a symbol has a prefix and /, the following name component should follow the
+        // first-character restrictions for symbols as a whole. This is to avoid ambiguity
+        // in reading contexts where prefixes might be presumed as implicitly included
+        // namespaces and elided thereafter.
+        if (i + 1 == slice.len) return error.InvalidSymbol;
+        try validateSym(slice[i + 1 ..]);
+    } else try validateSym(slice[@intFromBool(tagged)..]);
     return .{ .symbol = .init(start, p.index) };
 }
 
@@ -1026,7 +1042,7 @@ fn parseValue(
     var leading_ws = Token.init(p.index, undefined);
     p.skipWsAndComments();
     leading_ws.end = p.index;
-    if (p.last_value_end == p.index) return error.NoWhitespace;
+    if (p.last_value_end == p.index) return error.MissingWhitespaceBetweenValues;
 
     const v = try parseValueInner(p, mode, &leading_ws);
 
