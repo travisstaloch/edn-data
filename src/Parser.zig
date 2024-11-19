@@ -41,7 +41,7 @@ pub fn init(
 
 pub fn isIntOrFloatDigit(c: u8) bool {
     return std.ascii.isDigit(c) or switch (c) {
-        '.', '-', 'e', 'E' => true,
+        '.', '-', '+', 'e', 'E' => true,
         else => false,
     };
 }

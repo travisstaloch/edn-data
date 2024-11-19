@@ -402,7 +402,15 @@ test "tagged handler" {
     try testing.expectEqual(0, res.values[0].map.values[1].integer);
 }
 
-const Expectation = struct { edn.Value.Tag, u32 };
+const Expectation = union(enum) {
+    true,
+    false,
+    nil,
+    string: []const u8,
+    symbol: []const u8,
+    character: u21,
+    integer: i128,
+};
 
 fn expect(src: []const u8, expected: []const Expectation) !void {
     const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
@@ -410,14 +418,12 @@ fn expect(src: []const u8, expected: []const Expectation) !void {
     // std.debug.print("{any}\n", .{res.values[0..res.top_level_values]});
     try testing.expectEqual(expected.len, res.top_level_values);
     for (expected, res.values[0..res.top_level_values]) |ex, actual| {
-        try testing.expectEqual(ex[0], std.meta.activeTag(actual));
+        try testing.expectEqualStrings(@tagName(ex), @tagName(actual));
         switch (actual) {
-            .string,
-            .keyword,
+            inline .string,
             .symbol,
-            .float,
-            => |token| try testing.expectEqual(ex[1], token.end - token.start),
-            .character => |c| try testing.expectEqual(ex[1], c),
+            => |token, tag| try testing.expectEqualStrings(@field(ex, @tagName(tag)), token.src(src)),
+            inline .character, .integer => |int, tag| try testing.expectEqual(@field(ex, @tagName(tag)), int),
             else => {},
         }
     }
@@ -426,80 +432,108 @@ fn expect(src: []const u8, expected: []const Expectation) !void {
 test "string parsing" {
     try expect(
         \\""
-    , &.{.{ .string, 2 }});
-    try expect(
-        \\"hi"
-    , &.{.{ .string, 4 }});
+    , &.{.{ .string = "\"\"" }});
+    try expect("\"hi\"", &.{.{ .string = "\"hi\"" }});
     try expect(
         \\"hi there"
-    , &.{.{ .string, 10 }});
+    , &.{.{ .string = "\"hi there\"" }});
     try expect(
         \\"one\ntwo"
-    , &.{.{ .string, 10 }});
+    , &.{.{ .string = "\"one\\ntwo\"" }});
     try expect(
         \\"one\ntwo"
-    , &.{.{ .string, 10 }});
+    , &.{.{ .string = "\"one\\ntwo\"" }});
     try expect(
         \\"one\rtwo"
-    , &.{.{ .string, 10 }});
+    , &.{.{ .string = "\"one\\rtwo\"" }});
     try expect(
         \\"one\ttwo"
-    , &.{.{ .string, 10 }});
+    , &.{.{ .string = "\"one\\ttwo\"" }});
     try expect(
         \\"\\"
-    , &.{.{ .string, 4 }});
+    , &.{.{ .string = 
+    \\"\\"
+    }});
     try expect(
         \\"\""
-    , &.{.{ .string, 4 }});
+    , &.{.{ .string = 
+    \\"\""
+    }});
     try expect(
         \\hi"hi"
-    , &.{ .{ .symbol, 2 }, .{ .string, 4 } });
+    , &.{ .{ .symbol = "hi" }, .{ .string = "\"hi\"" } });
     try expect(
         \\true"hi"
-    , &.{ .{ .true, 0 }, .{ .string, 4 } });
+    , &.{ .true, .{ .string = "\"hi\"" } });
     try expect(
         \\"hi"true
-    , &.{ .{ .string, 4 }, .{ .true, 0 } });
+    , &.{ .{ .string = "\"hi\"" }, .true });
     try expect(
         \\123"hi"
-    , &.{ .{ .integer, 0 }, .{ .string, 4 } });
+    , &.{ .{ .integer = 123 }, .{ .string = "\"hi\"" } });
     try expect(
         \\"hi"123
-    , &.{ .{ .string, 4 }, .{ .integer, 0 } });
+    , &.{ .{ .string = "\"hi\"" }, .{ .integer = 123 } });
     try expect(
         \\"hi""hi"
-    , &.{ .{ .string, 4 }, .{ .string, 4 } });
+    , &.{ .{ .string = "\"hi\"" }, .{ .string = "\"hi\"" } });
+
+    try testing.expectError(error.InvalidString, expect(
+        \\"
+    , &.{}));
+    try testing.expectError(error.InvalidEscape, expect(
+        \\"\
+    , &.{}));
+    try testing.expectError(error.InvalidString, expect(
+        \\"\\
+    , &.{}));
+    try testing.expectError(error.InvalidString, expect(
+        \\"\\""
+    , &.{}));
 }
 
 test "char parsing" {
     try expect(
         \\\a
-    , &.{.{ .character, 'a' }});
+    , &.{.{ .character = 'a' }});
     try expect(
         \\\u
-    , &.{.{ .character, 'u' }});
+    , &.{.{ .character = 'u' }});
     try expect(
         \\\space
-    , &.{.{ .character, ' ' }});
+    , &.{.{ .character = ' ' }});
     try expect(
         \\\newline
-    , &.{.{ .character, '\n' }});
+    , &.{.{ .character = '\n' }});
     try expect(
         \\\return
-    , &.{.{ .character, '\r' }});
+    , &.{.{ .character = '\r' }});
     try expect(
         \\\tab
-    , &.{.{ .character, '\t' }});
+    , &.{.{ .character = '\t' }});
     try expect(
         \\\\
-    , &.{.{ .character, '\\' }});
+    , &.{.{ .character = '\\' }});
     try expect(
         \\\u1F590
-    , &.{.{ .character, '🖐' }});
+    , &.{.{ .character = '🖐' }});
     try expect(
         \\\u"hi"
-    , &.{ .{ .character, 'u' }, .{ .string, 4 } });
+    , &.{ .{ .character = 'u' }, .{ .string = "\"hi\"" } });
     try expect(
         \\\u1F590"hi"
-    , &.{ .{ .character, '🖐' }, .{ .string, 4 } });
+    , &.{ .{ .character = '🖐' }, .{ .string = "\"hi\"" } });
+
+    try testing.expectError(error.InvalidChar, expect(
+        \\\
+    , &.{}));
+}
+
+test "int parsing" {
+    try expect("928764", &.{.{ .integer = 928764 }});
+    try expect("1001", &.{.{ .integer = 1001 }});
+    try expect("0", &.{.{ .integer = 0 }});
+    try expect("+3", &.{.{ .integer = 3 }});
+    try expect("-0", &.{.{ .integer = 0 }});
+    try expect("-12", &.{.{ .integer = -12 }});
 }

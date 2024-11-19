@@ -11,6 +11,7 @@ pub const ParseError = error{
     Parse,
     Eof,
     InvalidChar,
+    InvalidString,
     SymEmpty,
     SymInvalidFirstChar,
     SymIsDigit,
@@ -689,7 +690,8 @@ fn parseString(p: *Parser) !Value {
     debug("{s: <[1]}parseString()", .{ "", p.depth * 2 });
     const start = p.index;
     p.index += 1;
-    while (p.peek(0)) |c| : (p.index += 1) {
+    while (true) : (p.index += 1) {
+        const c = p.peek(0) orelse return error.InvalidString;
         switch (c) {
             '"' => break,
             '\\' => {
@@ -920,7 +922,7 @@ fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Va
     debug("{s: <[1]}parseValueInner() '{2?c}'", .{ "", p.depth * 2, c });
     return switch (c) {
         'a'...'z', 'A'...'Z' => try parseSym(p, null),
-        '0'...'9', '-' => try parseNum(p),
+        '0'...'9', '-', '+' => try parseNum(p),
         '"' => try parseString(p),
         '\\' => try parseChar(p),
         ':' => try parseKeyword(p),
