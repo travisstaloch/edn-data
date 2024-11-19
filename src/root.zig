@@ -921,7 +921,6 @@ fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Va
     const c = p.peek(0).?;
     debug("{s: <[1]}parseValueInner() '{2?c}'", .{ "", p.depth * 2, c });
     return switch (c) {
-        'a'...'z', 'A'...'Z' => try parseSym(p, null),
         '0'...'9', '-', '+' => try parseNum(p),
         '"' => try parseString(p),
         '\\' => try parseChar(p),
@@ -969,7 +968,10 @@ fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Va
                 break :blk v;
             },
         } else return err(p, "unexpected end of file '{c}'", .{c}),
-        else => return err(p, "unexpected character '{c}'", .{c}),
+        else => return if (isSymChar(c))
+            try parseSym(p, null)
+        else
+            err(p, "unexpected character '{c}'", .{c}),
     };
 }
 fn parseValue(

@@ -559,3 +559,9 @@ test "float parsing" {
     try expect("5.12E-3", &.{.{ .float = "5.12E-3" }});
     try expect("1001.00100e10", &.{.{ .float = "1001.00100e10" }});
 }
+
+test "symbol parsing" {
+    try expect("=", &.{.{ .symbol = "=" }});
+    try expect("even?", &.{.{ .symbol = "even?" }});
+    try expect("even? ", &.{.{ .symbol = "even?" }});
+}
