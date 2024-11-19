@@ -63,6 +63,10 @@ pub fn next(p: *Parser) ?u8 {
     return p.src[p.index];
 }
 
+pub fn isWs(p: *Parser, index: u32) bool {
+    return isWhitespace(p.src[index]);
+}
+
 fn isWhitespace(c: u8) bool {
     return std.ascii.isWhitespace(c) or c == ',';
 }

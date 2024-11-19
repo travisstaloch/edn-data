@@ -408,10 +408,38 @@ const Expectation = union(enum) {
     nil,
     string: []const u8,
     symbol: []const u8,
+    keyword: []const u8,
     float: []const u8,
     character: u21,
     integer: i128,
+    vector: []const Expectation,
 };
+
+fn expectOne(ex: Expectation, actual: edn.Value, src: []const u8) !void {
+    try testing.expectEqualStrings(@tagName(ex), @tagName(actual));
+    switch (actual) {
+        inline .string,
+        .symbol,
+        .keyword,
+        => |token, tag| try testing.expectEqualStrings(@field(ex, @tagName(tag)), token.src(src)),
+        .float,
+        => |float| try testing.expectEqualStrings(ex.float, float.src(src)),
+        .nil,
+        .true,
+        .false,
+        => {},
+        inline .character,
+        .integer,
+        => |int, tag| try testing.expectEqual(@field(ex, @tagName(tag)), int),
+        .vector => |v| {
+            try testing.expectEqual(ex.vector.len, v.len);
+            for (ex.vector, v) |e, a| {
+                try expectOne(e, a, src);
+            }
+        },
+        .list, .map, .set => unreachable,
+    }
+}
 
 fn expect(src: []const u8, expected: []const Expectation) !void {
     const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
@@ -419,45 +447,34 @@ fn expect(src: []const u8, expected: []const Expectation) !void {
     // std.debug.print("{any}\n", .{res.values[0..res.top_level_values]});
     try testing.expectEqual(expected.len, res.top_level_values);
     for (expected, res.values[0..res.top_level_values]) |ex, actual| {
-        try testing.expectEqualStrings(@tagName(ex), @tagName(actual));
-        switch (actual) {
-            inline .string,
-            .symbol,
-            => |token, tag| try testing.expectEqualStrings(@field(ex, @tagName(tag)), token.src(src)),
-            .float,
-            => |float| try testing.expectEqualStrings(ex.float, float.src(src)),
-            .nil,
-            .true,
-            .false,
-            => {},
-            inline .character,
-            .integer,
-            => |int, tag| try testing.expectEqual(@field(ex, @tagName(tag)), int),
-            .keyword, .list, .vector, .map, .set => unreachable,
-        }
+        try expectOne(ex, actual, src);
     }
+}
+
+fn quote(comptime s: []const u8) []const u8 {
+    return "\"" ++ s ++ "\"";
 }
 
 test "string parsing" {
     try expect(
         \\""
     , &.{.{ .string = "\"\"" }});
-    try expect("\"hi\"", &.{.{ .string = "\"hi\"" }});
+    try expect("\"hi\"", &.{.{ .string = quote("hi") }});
     try expect(
         \\"hi there"
-    , &.{.{ .string = "\"hi there\"" }});
+    , &.{.{ .string = quote("hi there") }});
     try expect(
         \\"one\ntwo"
-    , &.{.{ .string = "\"one\\ntwo\"" }});
+    , &.{.{ .string = quote("one\\ntwo") }});
     try expect(
         \\"one\ntwo"
-    , &.{.{ .string = "\"one\\ntwo\"" }});
+    , &.{.{ .string = quote("one\\ntwo") }});
     try expect(
         \\"one\rtwo"
-    , &.{.{ .string = "\"one\\rtwo\"" }});
+    , &.{.{ .string = quote("one\\rtwo") }});
     try expect(
         \\"one\ttwo"
-    , &.{.{ .string = "\"one\\ttwo\"" }});
+    , &.{.{ .string = quote("one\\ttwo") }});
     try expect(
         \\"\\"
     , &.{.{ .string = 
@@ -470,22 +487,22 @@ test "string parsing" {
     }});
     try expect(
         \\hi"hi"
-    , &.{ .{ .symbol = "hi" }, .{ .string = "\"hi\"" } });
+    , &.{ .{ .symbol = "hi" }, .{ .string = quote("hi") } });
     try expect(
         \\true"hi"
-    , &.{ .true, .{ .string = "\"hi\"" } });
+    , &.{ .true, .{ .string = quote("hi") } });
     try expect(
         \\"hi"true
-    , &.{ .{ .string = "\"hi\"" }, .true });
+    , &.{ .{ .string = quote("hi") }, .true });
     try expect(
         \\123"hi"
-    , &.{ .{ .integer = 123 }, .{ .string = "\"hi\"" } });
+    , &.{ .{ .integer = 123 }, .{ .string = quote("hi") } });
     try expect(
         \\"hi"123
-    , &.{ .{ .string = "\"hi\"" }, .{ .integer = 123 } });
+    , &.{ .{ .string = quote("hi") }, .{ .integer = 123 } });
     try expect(
         \\"hi""hi"
-    , &.{ .{ .string = "\"hi\"" }, .{ .string = "\"hi\"" } });
+    , &.{ .{ .string = quote("hi") }, .{ .string = quote("hi") } });
 
     try testing.expectError(error.InvalidString, expect(
         \\"
@@ -528,10 +545,10 @@ test "char parsing" {
     , &.{.{ .character = '🖐' }});
     try expect(
         \\\u"hi"
-    , &.{ .{ .character = 'u' }, .{ .string = "\"hi\"" } });
+    , &.{ .{ .character = 'u' }, .{ .string = quote("hi") } });
     try expect(
         \\\u1F590"hi"
-    , &.{ .{ .character = '🖐' }, .{ .string = "\"hi\"" } });
+    , &.{ .{ .character = '🖐' }, .{ .string = quote("hi") } });
 
     try testing.expectError(error.InvalidChar, expect(
         \\\
@@ -564,4 +581,34 @@ test "symbol parsing" {
     try expect("=", &.{.{ .symbol = "=" }});
     try expect("even?", &.{.{ .symbol = "even?" }});
     try expect("even? ", &.{.{ .symbol = "even?" }});
+}
+
+test "keyword parsing" {
+    try expect(":a", &.{.{ .keyword = ":a" }});
+    try expect(":name", &.{.{ .keyword = ":name" }});
+    try expect(":ns.nested/name ", &.{.{ .keyword = ":ns.nested/name" }});
+}
+
+test "vector parsing" {
+    const empty_vec = Expectation{ .vector = &.{} };
+    try expect("[]", &.{empty_vec});
+    try expect("[  ]", &.{empty_vec});
+    try expect("[\"one\"]", &.{.{ .vector = &.{.{ .string = quote("one") }} }});
+    try expect("[\"one\" \"and two\"]", &.{.{ .vector = &.{ .{ .string = quote("one") }, .{ .string = quote("and two") } } }});
+    try expect("[true true]", &.{.{ .vector = &.{ .true, .true } }});
+    try expect("[true \"well, then.\"]", &.{.{ .vector = &.{ .true, .{ .string = quote("well, then.") } } }});
+    try expect("[true  [\"one\" [\"two\", nil ]]]", &.{.{ .vector = &.{
+        .true, .{ .vector = &.{
+            .{ .string = quote("one") },
+            .{ .vector = &.{ .{ .string = quote("two") }, .nil } },
+        } },
+    } }});
+    try expect("[[] [] ]", &.{.{ .vector = &.{ empty_vec, empty_vec } }});
+    try expect("[[][]]", &.{.{ .vector = &.{ empty_vec, empty_vec } }});
+    try expect("[hi[]]", &.{.{ .vector = &.{ .{ .symbol = "hi" }, empty_vec } }});
+    try expect("[[]hi]", &.{.{ .vector = &.{ empty_vec, .{ .symbol = "hi" } } }});
+    try expect("[true[]]", &.{.{ .vector = &.{ .true, empty_vec } }});
+    try expect("[[]true]", &.{.{ .vector = &.{ empty_vec, .true } }});
+    try expect("[\"hi\"[]]", &.{.{ .vector = &.{ .{ .string = quote("hi") }, empty_vec } }});
+    try expect("[[]\"hi\"]", &.{.{ .vector = &.{ empty_vec, .{ .string = quote("hi") } } }});
 }
