@@ -902,9 +902,15 @@ fn parseSet(
     p.index += 2;
     var i: u32 = 0;
     while (true) : (i += 1) {
-        const c = p.peek(0) orelse return error.Eof;
+        var next_non_ws = p.index;
+        const c = while (next_non_ws < p.src.len) : (next_non_ws += 1) {
+            if (!p.isWs(next_non_ws)) break p.src[next_non_ws];
+        } else return error.Eof;
         debug("{s: <[1]}parseSet '{2?c}'", .{ "", p.depth * 2, c });
-        if (c == '}') break;
+        if (c == '}') {
+            p.index = next_non_ws;
+            break;
+        }
 
         if (mode == .allocate) {
             try parseValue(p, mode, result[i..].ptr, result_ws[i..].ptr);

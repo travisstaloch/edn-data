@@ -414,6 +414,7 @@ const Expectation = union(enum) {
     integer: i128,
     vector: []const Expectation,
     list: []const Expectation,
+    set: []const Expectation,
 };
 
 fn expectOne(ex: Expectation, actual: edn.Value, src: []const u8) !void {
@@ -444,7 +445,13 @@ fn expectOne(ex: Expectation, actual: edn.Value, src: []const u8) !void {
                 try expectOne(e, a, src);
             }
         },
-        .map, .set => unreachable,
+        .set => |v| {
+            try testing.expectEqual(ex.set.len, v.len);
+            for (ex.set, v) |e, a| {
+                try expectOne(e, a, src);
+            }
+        },
+        .map => unreachable,
     }
 }
 
@@ -644,4 +651,45 @@ test "list parsing" {
     try expect("(true  (\"one\" (\"two\", nil )))", &.{
         .{ .list = &.{ .true, .{ .list = &.{ str_one, .{ .list = &.{ str_two, .nil } } } } } },
     });
+}
+
+test "set parsing" {
+    const empty_set = Expectation{ .set = &.{} };
+    try expect("#{}", &.{empty_set});
+    try expect("#{  }", &.{empty_set});
+    try expect("#{\"one\"}", &.{.{ .set = &.{str_one} }});
+    try expect("#{\"one\" \"and two\"}", &.{.{
+        .set = &.{ str_one, str_and_two },
+    }});
+    try expect("#{true true}", &.{.{ .set = &.{ .true, .true } }});
+    try expect("#{true \"well, then.\"}", &.{.{
+        .set = &.{ .true, str_well },
+    }});
+    try expect("#{true  #{\"one\" #{\"two\", nil }}}", &.{
+        .{ .set = &.{ .true, .{ .set = &.{ str_one, .{ .set = &.{ str_two, .nil } } } } } },
+    });
+    try expect("#{true  #{\"one\" #{\"two\", nil }}}", &.{
+        .{ .set = &.{ .true, .{ .set = &.{ str_one, .{ .set = &.{ str_two, .nil } } } } } },
+    });
+    try expect("#{true  #{\"one\" #{\"two\", nil }}}", &.{
+        .{ .set = &.{ .true, .{ .set = &.{ str_one, .{ .set = &.{ str_two, .nil } } } } } },
+    });
+    try expect("#{hi#{}}", &.{.{
+        .set = &.{ sym_hi, empty_set },
+    }});
+    try expect("#{#{}hi}", &.{.{
+        .set = &.{ empty_set, sym_hi },
+    }});
+    try expect("#{true#{}}", &.{.{
+        .set = &.{ .true, empty_set },
+    }});
+    try expect("#{#{}true}", &.{.{
+        .set = &.{ empty_set, .true },
+    }});
+    try expect("#{\"hi\"#{}}", &.{.{
+        .set = &.{ str_hi, empty_set },
+    }});
+    try expect("#{#{}\"hi\"}", &.{.{
+        .set = &.{ empty_set, str_hi },
+    }});
 }
