@@ -258,13 +258,21 @@ pub const ParseResult = struct {
 pub const Options = struct {
     flags: packed struct(u8) {
         whitespace: enum(u1) { include, exclude } = .include,
-        mode: ParseMode = .allocate,
-        _padding: u6 = undefined,
+        _padding: u7 = undefined,
     } = .{},
     userdata: ?*anyopaque = null,
 };
 
-pub const ParseMode = enum(u1) { allocate, measure };
+pub const ParseMode = enum(u1) {
+    // TODO skip any expensive parsing such as parsing integers during measure.
+    /// only update Parser.measured fields (values, whitespace, and top level).
+    /// don't allocate or write to any memory.
+    measure,
+    /// write values and whitespace to Parser.values and Parser.ws.
+    /// parseFromSliceAlloc() will parse twice, the first to measure and second
+    /// to allocate write to allocate memory.
+    allocate,
+};
 
 pub const Measured = struct {
     values: u32 = 0,
@@ -272,14 +280,26 @@ pub const Measured = struct {
     top_level_values: u32 = 0,
 };
 
-pub fn measure(src: []const u8, options: Options, comptime comptime_options: ComptimeOptions) !Measured {
-    var opts = options;
-    opts.flags.mode = .measure;
-    var p = Parser.init(src, opts, undefined, undefined, undefined, undefined, comptime_options.handlers);
+pub fn measure(
+    src: []const u8,
+    options: Options,
+    comptime comptime_options: ComptimeOptions,
+) !Measured {
+    var p = Parser.init(
+        src,
+        options,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        comptime_options.handlers,
+    );
     try parseValues(&p, .measure);
     return p.measured;
 }
 
+/// assumes that values and ws are large enough to hold the parse results.
+/// users may call measure() to get the necessary sizes.
 pub fn parseFromSliceBuf(
     src: []const u8,
     options: Options,
@@ -312,6 +332,9 @@ pub fn parseFromSliceBuf(
     };
 }
 
+/// performs two parsing passes. the first, measure, determines how many values
+/// and whitespace entries are needed.  and the second allocates and write to
+/// those entries using parseFromSliceBuf()
 pub fn parseFromSliceAlloc(
     alloc: Allocator,
     src: []const u8,
@@ -319,13 +342,6 @@ pub fn parseFromSliceAlloc(
     comptime comptime_options: ComptimeOptions,
 ) !ParseResult {
     const measured = try measure(src, options, comptime_options);
-    if (options.flags.mode == .measure) {
-        var r: ParseResult = undefined;
-        r.values.len = measured.values;
-        r.whitespaces.len = measured.whitespaces;
-        r.top_level_values = measured.top_level_values;
-        return r;
-    }
 
     const values = try alloc.alloc(Value, measured.values);
     errdefer alloc.free(values);
@@ -383,8 +399,7 @@ fn parseType(
     p: *Parser,
 ) ParseError!T {
     if (isContainer(T) and @hasDecl(T, "ednParse")) {
-        // TODO add ednParse() tests
-        return T.ednParse(p);
+        return T.ednParse(p, p.options.userdata);
     }
 
     if (p.peek(0) == '#') {
@@ -397,6 +412,7 @@ fn parseType(
         var next_dummy_leading_ws = Token.init(p.index, undefined);
         const next = try parseValueInner(p, .measure, &next_dummy_leading_ws);
         if (P) |Parent| {
+            comptime assert(isContainer(Parent));
             if (@hasDecl(Parent, "ednTagHandler")) {
                 return Parent.ednTagHandler(
                     T,
@@ -742,6 +758,7 @@ fn parseNum(p: *Parser) !Value {
     p.skipWhileFn(Parser.isIntOrFloatDigit);
     const src = p.src[start..p.index];
     debug("{s: <[1]}parseNum() '{2s}'", .{ "", p.depth * 2, src });
+
     return if (mem.indexOfScalar(u8, src, '.')) |_|
         .{ .float = .init(start, p.index) }
     else
@@ -798,13 +815,12 @@ fn parseChar(p: *Parser) !Value {
         const start = p.index;
         const end = @min(start + 5, p.src.len);
         while (p.index < end) : (p.index += 1) {
-            switch (p.src[p.index]) {
-                'a'...'f', 'A'...'F', '0'...'9' => {},
-                else => break,
-            }
+            if (!std.ascii.isHex(p.src[p.index])) break;
         }
         if (p.index == start) return .{ .character = 'u' };
-        const c = try std.fmt.parseUnsigned(u21, p.src[start..p.index], 16);
+        const slice = p.src[start..p.index];
+        const c = try std.fmt.parseUnsigned(u21, slice, 16);
+        if (!std.unicode.utf8ValidCodepoint(c)) return error.InvalidChar;
         return .{ .character = c };
     }
 
@@ -1014,6 +1030,12 @@ fn parseDiscard(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) ParseE
     debug("{s: <[1]}parseDiscard() no eos", .{ "", p.depth * 2 });
     const v = try parseValueInner(p, mode, &next_dummy_leading_ws);
     return v;
+}
+
+// TODO allow users to skip expensive parsing such as parsing integers
+pub fn userParseValue(p: *Parser) !Value {
+    var dummy_ws: Token = undefined;
+    return parseValueInner(p, .measure, &dummy_ws);
 }
 
 fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Value {

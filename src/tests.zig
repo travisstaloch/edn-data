@@ -876,3 +876,34 @@ test "no intermediate whitespace" {
         try testing.expectError(error.MissingWhitespaceBetweenValues, res);
     }
 }
+
+test "ednParse()" {
+    var userdata1: u8 = 0;
+    const T = struct {
+        a: u8,
+        pub fn ednParse(p: *edn.Parser, userdata: ?*anyopaque) edn.ParseError!@This() {
+            const data: *u8 = @ptrCast(userdata orelse unreachable);
+            data.* = 10;
+
+            p.skipWsAndComments();
+            if (p.peek(0) != '{') return error.Parse;
+            p.index += 1;
+            p.skipWsAndComments();
+
+            const key = try edn.userParseValue(p);
+            if (key != .keyword) return error.Parse;
+            p.skipWsAndComments();
+
+            const value = try edn.userParseValue(p);
+            if (value != .integer) return error.Parse;
+            p.skipWsAndComments();
+            if (p.peek(0) != '}') return error.Parse;
+            p.index += 1;
+
+            return .{ .a = @intCast(value.integer) };
+        }
+    };
+    const src = "{:a 10}";
+    const t = try edn.parseTypeFromSlice(T, src, .{ .userdata = &userdata1 });
+    try testing.expectEqual(10, t.a);
+}
