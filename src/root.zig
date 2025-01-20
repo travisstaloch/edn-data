@@ -482,7 +482,7 @@ fn parseType(
             };
         },
         .pointer => |i| blk: switch (i.size) {
-            .Slice => switch (i.child) {
+            .slice => switch (i.child) {
                 u8 => {
                     const s = try parseString(p);
                     break :blk s.string.src(p.src);
@@ -566,9 +566,8 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
     while (unseen_iter.next()) |field| switch (field) {
         inline else => |tag| {
             const info = std.meta.fieldInfo(T, tag);
-            if (info.default_value) |default| {
-                const d: *const info.type = @ptrCast(default);
-                @field(t, @tagName(tag)) = d.*;
+            if (info.defaultValue()) |default| {
+                @field(t, @tagName(tag)) = default;
                 seen_fields.insert(tag);
             } else {
                 err(p, "missing field '{s}'", .{@tagName(tag)}, error.MissingFields) catch {};
