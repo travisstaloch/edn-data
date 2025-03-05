@@ -555,12 +555,12 @@ test "string parsing" {
     try expect(
         \\"\\"
     , &.{.{ .string = 
-    \\"\\"
+        \\"\\"
     }});
     try expect(
         \\"\""
     , &.{.{ .string = 
-    \\"\""
+        \\"\""
     }});
     try testing.expectError(error.MissingWhitespaceBetweenValues, expect(
         \\hi"hi"

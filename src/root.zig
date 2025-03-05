@@ -98,30 +98,30 @@ pub const Value = union(Value.Tag) {
     ) bool {
         return a == std.meta.activeTag(b) and
             switch (a) {
-            .nil, .true, .false => true,
-            .integer => a.integer == b.integer,
-            inline .float, .keyword, .symbol, .string => |payload, tag| mem.eql(
-                u8,
-                payload.src(a_src),
-                @field(b, @tagName(tag)).src(b_src),
-            ),
-            inline .vector, .list => |as, tag| blk: {
-                const bs = @field(b, @tagName(tag));
-                break :blk as.len == bs.len and for (as, bs) |aa, bb| {
-                    if (!aa.eql(a_src, a_values, bb, b_src, b_values)) break false;
-                } else true;
-            },
-            .character => |c| c == b.character,
-            // TODO hashing doesn't guarantee uniqueness
-            inline .map, .set => blk: {
-                const actx = MapContext{ .src = a_src, .values = a_values };
-                const ahash = actx.hash(a);
-                const bctx = MapContext{ .src = b_src, .values = b_values };
-                const bhash = bctx.hash(b);
-                break :blk ahash == bhash;
-            },
-            // else => std.debug.panic("TODO {s}", .{@tagName(a)}),
-        };
+                .nil, .true, .false => true,
+                .integer => a.integer == b.integer,
+                inline .float, .keyword, .symbol, .string => |payload, tag| mem.eql(
+                    u8,
+                    payload.src(a_src),
+                    @field(b, @tagName(tag)).src(b_src),
+                ),
+                inline .vector, .list => |as, tag| blk: {
+                    const bs = @field(b, @tagName(tag));
+                    break :blk as.len == bs.len and for (as, bs) |aa, bb| {
+                        if (!aa.eql(a_src, a_values, bb, b_src, b_values)) break false;
+                    } else true;
+                },
+                .character => |c| c == b.character,
+                // TODO hashing doesn't guarantee uniqueness
+                inline .map, .set => blk: {
+                    const actx = MapContext{ .src = a_src, .values = a_values };
+                    const ahash = actx.hash(a);
+                    const bctx = MapContext{ .src = b_src, .values = b_values };
+                    const bhash = bctx.hash(b);
+                    break :blk ahash == bhash;
+                },
+                // else => std.debug.panic("TODO {s}", .{@tagName(a)}),
+            };
     }
 };
 

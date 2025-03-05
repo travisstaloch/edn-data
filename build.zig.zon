@@ -1,7 +1,8 @@
 .{
-    .name = "extensible-data-notation",
+    .name = .extensible_data_notation,
     .version = "0.0.0",
     .dependencies = .{},
+    .fingerprint = 0xc073000a8b4e19d6,
     .paths = .{
         "build.zig",
         "build.zig.zon",
