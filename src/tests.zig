@@ -96,7 +96,7 @@ fn testParse(alloc: std.mem.Allocator, src: [:0]const u8) !void {
 test "allocation failures" {
     const f = try std.fs.cwd().openFile("examples/edn.edn", .{});
     defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, 8, 0);
+    const src = try f.readToEndAllocOptions(talloc, 100000, null, .@"8", 0);
     defer talloc.free(src);
     try testing.checkAllAllocationFailures(talloc, testParse, .{src});
 }
@@ -852,7 +852,7 @@ test "ednParse()" {
 test "Tokenizer.edn" {
     const f = try std.fs.cwd().openFile("examples/Tokenizer.edn", .{});
     defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, 8, 0);
+    const src = try f.readToEndAllocOptions(talloc, 100000, null, .@"8", 0);
     defer talloc.free(src);
     try testing.checkAllAllocationFailures(talloc, testParse, .{src});
 

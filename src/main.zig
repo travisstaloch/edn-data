@@ -12,7 +12,7 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
     const file = try std.fs.cwd().openFile(args[1], .{});
-    const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, 8, 0);
+    const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, .@"8", 0);
     defer alloc.free(src);
     var result = try edn.parseFromSliceAlloc(alloc, src, .{}, .{});
     defer result.deinit(alloc);

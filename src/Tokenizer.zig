@@ -661,7 +661,7 @@ inline fn parseExpectations(args: anytype) []const Expectation {
 test "edn.edn" {
     const f = try std.fs.cwd().openFile("examples/edn.edn", .{});
     defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, 4096, 0);
+    const src = try f.readToEndAllocOptions(talloc, 100000, null, @enumFromInt(12), 0);
     defer talloc.free(src);
 
     const expectations = parseExpectations(.{ // zig fmt: off
@@ -764,7 +764,7 @@ test "edn.edn" {
 test "Tokenizer.edn" {
     const f = try std.fs.cwd().openFile("examples/Tokenizer.edn", .{});
     defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, 4096, 0);
+    const src = try f.readToEndAllocOptions(talloc, 100000, null, @enumFromInt(12), 0);
     defer talloc.free(src);
 
     const expectations = parseExpectations(.{ // zig fmt: off

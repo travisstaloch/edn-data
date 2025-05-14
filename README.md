@@ -14,7 +14,12 @@ an edn parser in zig
 ## use
 fetch with the package manager
 ```console
-zig fetch --save git+https://github.com/travisstaloch/edn-data
+# with zig 0.14.0
+$ zig fetch --save git+https://github.com/travisstaloch/edn-data#0.14.0
+```
+```console
+# with zig nightly
+$ zig fetch --save git+https://github.com/travisstaloch/edn-data
 ```
 ```zig
 // build.zig
