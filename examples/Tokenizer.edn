@@ -1,0 +1,115 @@
+; * character sets
+; #statez/charset - a simple regex like character set
+SYMBOL     #statez/charset "[a-eg-mo-zA-Z*!_?%&=.<>/\\+\\-]"
+SYMBOL_1   #{SYMBOL #statez/charset "[0-9#:]"}
+SYMBOL_2   #{#statez/charset "[a-zA-Z*!_?%&=.<>\\+\\-]" \/}
+WS         #{\space \tab \return \newline \,}
+DIGIT      #statez/charset "[0-9]"
+DIGIT_1    #statez/charset "[1-9]"
+COLON      #{\:}
+WS_COMMENT (WS \;) ; list means union of character sets
+KEYWORD    #statez/charset "[a-eg-mo-zA-Z0-9*+!_?%&=<>/.\\-]"
+E          #{\e \E}
+STR_ESC    #{\" \n \t \\ \r}
+; TODO
+NUM_SUFFIX #{\N \M}
+; TODO
+; * string sets
+;; SYMBOL_2  #statez/stringset #{"nil" "true" "false"} 
+; idea - instead of string sets this could be expressed as nil-1 through nil-3,
+; true-1 through true-4 and false-1 through false-5.  however all these should
+; fallback to symbol state and i'm not sure how that would look
+CHAR_NAMED #statez/stringset #{"space" "newline" "tab" "return" "backspace" "formfeed"}
+
+; * state transitions - tx
+; map from char classes to other state transitions.
+; char classes may be single chars, charsets, or charset symbols.
+start {
+  \0       {DIGIT invalid number nil} ; tx may be declared inline
+  DIGIT_1  number
+  #{\- \+} {DIGIT number symbol nil}
+  \.       {DIGIT float symbol nil}
+  SYMBOL   symbol
+  \n       {\i {\l accept symbol_nil nil} symbol nil} ; TODO use #statez/stringset for these
+  \t       {\r {\u {\e accept symbol_true nil} symbol nil} symbol nil}
+  \f       {\a {\l {\s {\e accept symbol_false nil} symbol nil} symbol nil} symbol nil}
+  WS       ws
+  \(       lparen
+  \)       rparen
+  \[       lbracket
+  \]       rbracket
+  \{       lbrace
+  \}       rbrace
+  \#       hash
+  \;       comment
+  \"       str
+  \\       char
+  \:       {COLON invalid keyword nil}
+  \u0      eof
+  invalid  nil
+} number {
+  DIGIT number
+  \. float
+  E float_e
+  accept nil
+} float {
+  DIGIT float
+  E float_e
+  accept nil 
+} float_e {
+  #{DIGIT \- \+} float_e_digit
+  accept nil
+} float_e_digit {
+  DIGIT float_e_digit
+  accept  nil
+} symbol {
+  SYMBOL_2 accept
+  SYMBOL   symbol
+  accept   nil
+} str {
+  \"   accept
+  \\   str_escape
+  \u0  invalid
+  str nil
+} str_escape {
+  STR_ESC str
+  invalid nil
+} char {
+  \u char_u
+  \u0 invalid
+  ; (check nil for named chars or single char)
+  CHAR_NAMED accept
+} char_u {
+  \u0 invalid
+  ; hex digits (up to 4) accept
+  HEX {#statez/check-len 4 accept char_u nil} ; TODO implement #statez/check-len
+} ws {
+  WS ws
+  accept nil
+} comment {
+  \newline {WS_COMMENT comment accept nil}
+  \u0 accept
+  comment nil
+} keyword {
+  KEYWORD keyword
+  accept nil
+} hash {
+  \{ set
+  \_ discard
+  SYMBOL tagged_element
+  invalid nil
+} discard {
+  WS discard
+  ; TODO (any-value accept)  ; discard the value and continue
+  invalid nil
+} keyword {
+  KEYWORD keyword
+  \/ keyword_namespace
+  accept nil
+} keyword_namespace {
+  KEYWORD keyword_name
+  invalid nil
+} keyword_name {
+  KEYWORD keyword_name
+  accept nil
+}
