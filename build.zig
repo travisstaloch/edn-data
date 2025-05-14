@@ -25,14 +25,43 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const tests = b.addTest(.{
-        .root_source_file = b.path("src/tests.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    tests.root_module.addImport("extensible-data-notation", mod);
-    tests.filters = b.option([]const []const u8, "test-filters", "") orelse &.{};
-    const run_tests = b.addRunArtifact(tests);
+    // tests
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
+    const filters = b.option([]const []const u8, "test-filters", "") orelse &.{};
+    {
+        const tests = b.addTest(.{
+            .root_source_file = b.path("src/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        tests.root_module.addImport("extensible-data-notation", mod);
+        tests.filters = filters;
+        const run_tests = b.addRunArtifact(tests);
+        test_step.dependOn(&run_tests.step);
+        b.installArtifact(tests);
+    }
+    {
+        // TODO include these in src/tests.zig somehow.  these are included here instead
+        // of in src/tests.zig to avoid a 'file exists in multiple modules' error.
+        const tests = b.addTest(.{
+            .root_source_file = b.path("src/ringbuffer.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        tests.filters = filters;
+        const run_tests = b.addRunArtifact(tests);
+        test_step.dependOn(&run_tests.step);
+        b.installArtifact(tests);
+    }
+    {
+        const tests = b.addTest(.{
+            .root_source_file = b.path("src/Tokenizer.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        tests.filters = filters;
+        const run_tests = b.addRunArtifact(tests);
+        test_step.dependOn(&run_tests.step);
+        b.installArtifact(tests);
+    }
 }

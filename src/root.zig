@@ -1,23 +1,13 @@
 //! https://github.com/edn-format/edn
 
-const std = @import("std");
-const mem = std.mem;
-const Allocator = mem.Allocator;
-const assert = std.debug.assert;
-
-pub const Parser = @import("Parser.zig");
-
 pub const ParseError = error{
     Parse,
     Eof,
+    InvalidToken,
     InvalidChar,
     InvalidString,
-    InvalidSymbol,
-    MapDuplicateKey,
-    SetDuplicateKey,
     HandlerParse,
     MissingHandler,
-    InvalidEscape,
     EndOfMap,
     MissingWhitespaceBetweenValues,
     InvalidStruct,
@@ -25,34 +15,31 @@ pub const ParseError = error{
     MissingFields,
     InvalidUnion,
     InvalidBool,
-    InvalidType,
     InvalidArray,
     InvalidEnum,
+    InvalidInt,
+    InvalidFloat,
 } ||
     Allocator.Error ||
     std.fmt.ParseIntError ||
     std.fmt.ParseFloatError;
 
-pub const Token = struct {
-    start: u32,
-    end: u32,
-    pub fn init(start: u32, end: u32) Token {
-        return .{ .start = start, .end = end };
-    }
-    pub fn src(t: Token, s: []const u8) []const u8 {
-        return s[t.start..t.end];
-    }
-    pub fn leading(t: Token, s: []const u8, offset: u16) []const u8 {
-        return Token.init(t.start - offset, t.start).src(s);
-    }
-    pub fn trailing(t: Token, s: []const u8, offset: u16) []const u8 {
-        return Token.init(t.end, t.end + offset).src(s);
-    }
+pub const Token = Tokenizer.Token;
+
+pub const ValueList = struct {
+    values: []Value,
+    wss: [][2]u32,
+    leading_ws: [2]u32,
+    trailing_ws: [2]u32,
 };
 
 pub const ValueMap = struct {
+    leading_ws: [2]u32,
+    trailing_ws: [2]u32,
     keys: []Value,
     values: []Value,
+    key_wss: [][2]u32,
+    value_wss: [][2]u32,
     pub const init: ValueMap = .{ .keys = &.{}, .values = &.{} };
 };
 
@@ -64,12 +51,13 @@ pub const Value = union(Value.Tag) {
     character: u21,
     keyword: Token,
     symbol: Token,
+    tagged: struct { Token, *Value }, // TODO remove Token. don't think its used for formatting or anything.
     integer: i128,
     float: Token,
-    list: []Value,
-    vector: []Value,
+    list: ValueList,
+    vector: ValueList,
     map: ValueMap,
-    set: []Value,
+    set: ValueList,
 
     pub const Tag = enum(u8) {
         nil = 0,
@@ -79,21 +67,22 @@ pub const Value = union(Value.Tag) {
         character = 4,
         keyword = 5,
         symbol = 6,
-        integer = 7,
-        float = 8,
+        tagged = 7,
+        integer = 8,
+        float = 9,
         // containers
-        list = 9,
-        vector = 10,
-        map = 11,
-        set = 12,
+        list = 10,
+        vector = 11,
+        map = 12,
+        set = 13,
     };
 
     pub fn eql(
         a: Value,
-        a_src: []const u8,
+        a_src: [:0]const u8,
         a_values: []const Value,
         b: Value,
-        b_src: []const u8,
+        b_src: [:0]const u8,
         b_values: []const Value,
     ) bool {
         return a == std.meta.activeTag(b) and
@@ -107,7 +96,7 @@ pub const Value = union(Value.Tag) {
                 ),
                 inline .vector, .list => |as, tag| blk: {
                     const bs = @field(b, @tagName(tag));
-                    break :blk as.len == bs.len and for (as, bs) |aa, bb| {
+                    break :blk as.values.len == bs.values.len and for (as.values, bs.values) |aa, bb| {
                         if (!aa.eql(a_src, a_values, bb, b_src, b_values)) break false;
                     } else true;
                 },
@@ -120,13 +109,13 @@ pub const Value = union(Value.Tag) {
                     const bhash = bctx.hash(b);
                     break :blk ahash == bhash;
                 },
-                // else => std.debug.panic("TODO {s}", .{@tagName(a)}),
+                .tagged => std.debug.panic("TODO {s}", .{@tagName(a)}),
             };
     }
 };
 
 pub const MapContext = struct {
-    src: []const u8,
+    src: [:0]const u8,
     values: []const Value,
 
     fn hashValue(self: MapContext, v: Value, hptr: anytype) void {
@@ -136,8 +125,8 @@ pub const MapContext = struct {
             .character, .integer => |p| hptr.update(mem.asBytes(&p)),
             .float, .keyword, .symbol, .string => |token| hptr.update(token.src(self.src)),
             .vector, .list => |l| {
-                hptr.update(mem.asBytes(&l.len));
-                for (l) |i| self.hashValue(i, hptr);
+                hptr.update(mem.asBytes(&l.values.len));
+                for (l.values) |i| self.hashValue(i, hptr);
             },
             // maps are equal if they have the same number of entries, and for
             // every key/value entry in one map an equal key is present and
@@ -151,11 +140,11 @@ pub const MapContext = struct {
             },
             // sets are equal if they have the same count of elements and, for
             // every element in one set, an equal element is in the other.
-            .set => |keys| {
-                hptr.update(mem.asBytes(&keys.len));
-                for (keys) |k| self.hashValue(k, hptr);
+            .set => |set| {
+                hptr.update(mem.asBytes(&set.values.len));
+                for (set.values) |k| self.hashValue(k, hptr);
             },
-            // else => std.debug.panic("TODO {s}", .{@tagName(v)}),
+            .tagged => std.debug.panic("TODO {s}", .{@tagName(v)}),
         }
     }
 
@@ -174,7 +163,7 @@ pub const TaggedElementHandler = struct {
     pub const Fn = *const fn (
         value: Value,
         value_src: []const u8,
-        src: []const u8,
+        src: [:0]const u8,
         userdata: ?*anyopaque,
     ) ParseError!Value;
 
@@ -187,12 +176,13 @@ pub const TaggedElementHandler = struct {
 
 pub const ParseResult = struct {
     values: []const Value,
-    whitespaces: []const [2]Token,
+    wss: []const [2]u32,
+    final_ws: [2]u32,
     top_level_values: u32,
 
     pub fn deinit(r: ParseResult, alloc: Allocator) void {
         alloc.free(r.values);
-        alloc.free(r.whitespaces);
+        alloc.free(r.wss);
     }
 
     fn getList(list: []Value, n: u32) !Value {
@@ -201,9 +191,14 @@ pub const ParseResult = struct {
     }
 
     /// path: search components joined by double slashes ('//'). i.e. '0//1//foo'
-    pub fn find(r: ParseResult, path: []const u8, src: []const u8) !?Value {
+    pub fn find(r: ParseResult, path: []const u8, src: [:0]const u8) !?Value {
         var it = mem.splitSequence(u8, path, "//");
-        var cur: Value = .{ .list = @constCast(r.values[0..r.top_level_values]) };
+        var cur: Value = .{ .list = .{
+            .values = @constCast(r.values[0..r.top_level_values]),
+            .wss = if (r.wss.len != 0) @constCast(r.wss[0..r.top_level_values]) else &.{},
+            .leading_ws = undefined,
+            .trailing_ws = undefined,
+        } };
         component: while (it.next()) |component| {
             switch (cur) {
                 .map => |map| for (map.keys, 0..) |k, i| {
@@ -240,9 +235,9 @@ pub const ParseResult = struct {
 
             if (std.fmt.parseUnsigned(u32, component, 10)) |n| {
                 switch (cur) {
-                    .list => cur = try getList(cur.list, n),
-                    .vector => cur = try getList(cur.vector, n),
-                    .set => cur = try getList(cur.set, n),
+                    .list => cur = try getList(cur.list.values, n),
+                    .vector => cur = try getList(cur.vector.values, n),
+                    .set => cur = try getList(cur.set.values, n),
                     .map => cur = try getList(cur.map.values, n),
                     else => return error.PathNotFound,
                 }
@@ -255,12 +250,9 @@ pub const ParseResult = struct {
     }
 };
 
-pub const Options = struct {
-    flags: packed struct(u8) {
-        whitespace: enum(u1) { include, exclude } = .include,
-        _padding: u7 = undefined,
-    } = .{},
+pub const Options = packed struct {
     userdata: ?*anyopaque = null,
+    whitespace: enum(u1) { include, exclude } = .include,
 };
 
 pub const ParseMode = enum(u1) {
@@ -275,36 +267,29 @@ pub const ParseMode = enum(u1) {
 };
 
 pub const Measured = struct {
+    /// total number of values found during parsing
     values: u32 = 0,
-    whitespaces: u32 = 0,
+    /// total number of values found at top level
     top_level_values: u32 = 0,
 };
 
 pub fn measure(
-    src: []const u8,
+    src: [:0]const u8,
     options: Options,
     comptime comptime_options: ComptimeOptions,
 ) !Measured {
-    var p = Parser.init(
-        src,
-        options,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        comptime_options.handlers,
-    );
-    try parseValues(&p, .measure);
+    var p = Parser.init(src, options, undefined, undefined, undefined, undefined, comptime_options.handlers);
+    _ = try parseValues(&p, .measure);
     return p.measured;
 }
 
-/// assumes that values and ws are large enough to hold the parse results.
+/// assumes that values and wss are large enough to hold the parse results.
 /// users may call measure() to get the necessary sizes.
 pub fn parseFromSliceBuf(
-    src: []const u8,
+    src: [:0]const u8,
     options: Options,
     values: []Value,
-    ws: [][2]Token,
+    wss: [][2]u32,
     measured: Measured,
     comptime comptime_options: ComptimeOptions,
 ) !ParseResult {
@@ -313,22 +298,29 @@ pub fn parseFromSliceBuf(
         options,
         values.ptr,
         values.ptr + measured.top_level_values,
-        ws.ptr,
-        ws.ptr + measured.top_level_values,
+        wss.ptr,
+        wss.ptr + measured.top_level_values,
         comptime_options.handlers,
     );
     p.measured = measured;
-    try parseValues(&p, .allocate);
+    const final_ws = try parseValues(&p, .allocate);
 
+    debug("measured.values {} parsed values count {}", .{ p.measured.values, p.values - p.values_start });
+
+    // TODO verify that all containers are closed.  currently we can trip this assertion with
     assert(p.values == p.values_start + measured.values);
-    if (options.flags.whitespace == .include) assert(p.ws == p.ws_start + measured.whitespaces);
     assert(p.values_start == values.ptr);
-    assert(p.ws_start == ws.ptr);
+    if (p.options.whitespace == .include) assert(p.wss == p.wss_start + measured.values);
+    assert(p.wss_start == wss.ptr);
 
     return .{
         .values = p.values_start[0..measured.values],
-        .whitespaces = p.ws_start[0..measured.whitespaces],
+        .wss = if (options.whitespace == .include)
+            p.wss_start[0..measured.values]
+        else
+            &.{},
         .top_level_values = measured.top_level_values,
+        .final_ws = final_ws,
     };
 }
 
@@ -337,7 +329,7 @@ pub fn parseFromSliceBuf(
 /// those entries using parseFromSliceBuf()
 pub fn parseFromSliceAlloc(
     alloc: Allocator,
-    src: []const u8,
+    src: [:0]const u8,
     options: Options,
     comptime comptime_options: ComptimeOptions,
 ) !ParseResult {
@@ -345,10 +337,13 @@ pub fn parseFromSliceAlloc(
 
     const values = try alloc.alloc(Value, measured.values);
     errdefer alloc.free(values);
-    const ws = try alloc.alloc([2]Token, measured.whitespaces);
-    errdefer alloc.free(ws);
+    const wss: [][2]u32 = if (options.whitespace == .include)
+        try alloc.alloc([2]u32, measured.values)
+    else
+        &.{};
+    errdefer alloc.free(wss);
 
-    return parseFromSliceBuf(src, options, values, ws, measured, comptime_options);
+    return parseFromSliceBuf(src, options, values, wss, measured, comptime_options);
 }
 
 pub const ComptimeOptions = struct {
@@ -357,7 +352,7 @@ pub const ComptimeOptions = struct {
 };
 
 pub inline fn parseFromSliceComptime(
-    comptime src: []const u8,
+    comptime src: [:0]const u8,
     comptime options: Options,
     comptime comptime_options: ComptimeOptions,
 ) !ParseResult {
@@ -365,20 +360,15 @@ pub inline fn parseFromSliceComptime(
         @setEvalBranchQuota(comptime_options.eval_branch_quota);
         const measured = try measure(src, options, comptime_options);
         var values: [measured.values]Value = undefined;
-        var ws: [measured.whitespaces][2]Token = undefined;
+        var ws: [measured.values][2]u32 = undefined;
         return parseFromSliceBuf(src, options, &values, &ws, measured, comptime_options);
     }
 }
 
-pub fn parseTypeFromSlice(
-    comptime T: type,
-    src: []const u8,
-    options: Options,
-) !T {
+pub fn parseTypeFromSlice(comptime T: type, src: [:0]const u8, options: Options) !T {
     var p = Parser.init(src, options, undefined, undefined, undefined, undefined, &.{});
     const t = try parseType(T, null, &p);
-    p.skipWsAndComments();
-    if (!p.eos()) return error.InvalidType;
+    if (!p.tokenizer.isTag(.eof)) return error.InvalidType;
     return t;
 }
 
@@ -402,43 +392,39 @@ fn parseType(
         return T.ednParse(p, p.options.userdata);
     }
 
-    if (p.peek(0) == '#') {
+    if (p.tokenizer.peek().tag == .tagged) {
         // support tagged element handlers
         // TODO skip discards
-        const sym = try parseSym(p);
+        const tag = p.tokenizer.next();
 
-        p.skipWsAndComments();
-        const next_start = p.index;
-        var next_dummy_leading_ws = Token.init(p.index, undefined);
-        const next = try parseValueInner(p, .measure, &next_dummy_leading_ws);
+        const tagged = p.tokenizer.next();
+        const next = try parseValueInner(p, tagged, .measure);
         if (P) |Parent| {
             comptime assert(isContainer(Parent));
             if (@hasDecl(Parent, "ednTagHandler")) {
                 return Parent.ednTagHandler(
                     T,
-                    sym.symbol.src(p.src),
-                    p.src[next_start..p.index],
-                    p.src,
+                    tag.src(p.tokenizer.src),
+                    tagged.src(p.tokenizer.src),
+                    p.tokenizer.src,
                     next,
                     p.options.userdata,
                 );
             }
         }
-        return err(p, "no handler for tag '{s}'", .{sym.symbol.src(p.src)}, error.MissingHandler);
+        return err(p, "no handler for tag '{s}'", .{tag.src(p.tokenizer.src)}, error.MissingHandler);
     }
 
     return switch (@typeInfo(T)) {
         .@"struct" => parseStruct(T, p),
         .@"union" => u: {
             const Fe = std.meta.FieldEnum(T);
-            if (p.peek(0) != '{') return error.InvalidUnion;
-            p.index += 1;
-            p.skipWsAndComments();
-            const c = p.peek(0) orelse return error.InvalidUnion;
-            const field = switch (c) {
-                ':' => blk: {
-                    const key = try parseKeyword(p);
-                    break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.src)[1..]) orelse
+            _ = try expectNext(.lbrace, error.InvalidUnion, p);
+            const c = p.tokenizer.next();
+            const field = switch (c.tag) {
+                .keyword => blk: {
+                    const key = Value{ .keyword = c };
+                    break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.tokenizer.src)[1..]) orelse
                         return error.InvalidStructField;
                 },
                 else => {
@@ -446,77 +432,68 @@ fn parseType(
                 },
             };
             debug("{s: <[1]}parseType union key {2s}", .{ "", p.depth * 2, @tagName(field) });
-            p.skipWsAndComments();
             const u = switch (field) {
                 inline else => |tag| @unionInit(
                     T,
                     @tagName(tag),
-                    try parseType(std.meta.FieldType(T, tag), T, p),
+                    try parseType(@FieldType(T, @tagName(tag)), T, p),
                 ),
             };
-            if (p.peek(0) != '}') return error.InvalidUnion;
-            p.index += 1;
+            if (consume(.rbrace, p) == null) return error.InvalidUnion;
             break :u u;
         },
         .bool => blk: {
-            const rest = p.src[p.index..];
-            if (mem.startsWith(u8, rest, "true")) {
-                p.index += 4;
+            const t = p.tokenizer.next();
+            if (t.tag == .true) {
                 break :blk true;
-            } else if (mem.startsWith(u8, rest, "false")) {
-                p.index += 5;
+            } else if (t.tag == .false) {
                 break :blk false;
             } else break :blk error.InvalidBool;
         },
         .int => blk: {
-            const n = try parseNum(p);
-            if (n != .integer) return error.InvalidType;
-            break :blk std.math.cast(T, n.integer) orelse error.Overflow;
+            const t = try expectNext(.int, error.InvalidInt, p);
+            break :blk try std.fmt.parseInt(T, t.src(p.tokenizer.src), 0);
         },
         .float => blk: {
-            const n = try parseNum(p);
-            break :blk switch (n) {
-                .integer => break :blk @floatFromInt(n.integer),
-                .float => break :blk std.fmt.parseFloat(T, n.float.src(p.src)),
-                else => return error.InvalidType,
-            };
+            const t = p.tokenizer.next();
+            if (t.tag != .float and t.tag != .int) return error.InvalidFloat;
+            break :blk std.fmt.parseFloat(T, t.src(p.tokenizer.src));
         },
         .pointer => |i| blk: switch (i.size) {
             .slice => switch (i.child) {
                 u8 => {
-                    const s = try parseString(p);
-                    break :blk s.string.src(p.src);
+                    const t = try expectNext(.str, error.InvalidString, p);
+                    const s = Value{ .string = t };
+                    break :blk s.string.src(p.tokenizer.src);
                 },
                 else => unsupportedType(T),
             },
             else => unsupportedType(T),
         },
         .optional => |i| blk: {
-            const rest = p.src[p.index..];
-            if (mem.startsWith(u8, rest, "nil")) {
-                p.index += 3;
-                break :blk null;
-            }
-            break :blk try parseType(i.child, P, p);
+            const t = p.tokenizer.peek();
+            break :blk switch (t.tag) {
+                .nil => {
+                    _ = p.tokenizer.next();
+                    break :blk null;
+                },
+                else => try parseType(i.child, P, p),
+            };
         },
         .@"enum" => blk: {
-            const key = try parseKeyword(p);
-            debug("enum key {s}", .{key.keyword.src(p.src)});
-            break :blk std.meta.stringToEnum(T, key.keyword.src(p.src)[1..]) orelse
+            const t = try expectNext(.keyword, error.InvalidEnum, p);
+            const key = Value{ .keyword = t };
+            debug("enum key {s}", .{key.keyword.src(p.tokenizer.src)});
+            break :blk std.meta.stringToEnum(T, key.keyword.src(p.tokenizer.src)[1..]) orelse
                 error.InvalidEnum;
         },
         inline .array, .vector => |i| blk: {
             var a: [i.len]i.child = undefined;
-            p.skipWsAndComments();
-            if (p.peek(0) != '[') return error.InvalidArray;
-            p.index += 1;
+            _ = try expectNext(.lbracket, error.InvalidArray, p);
             for (&a) |*ele| {
-                p.skipWsAndComments();
                 ele.* = try parseType(i.child, P, p);
             }
-            p.skipWsAndComments();
-            if (p.peek(0) != ']') return error.InvalidArray;
-            p.index += 1;
+            _ = try expectNext(.rbracket, error.InvalidArray, p);
             break :blk a;
         },
         else => unsupportedType(T),
@@ -531,32 +508,28 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
     defer debug("{s: <[1]}<parseStruct({2s})", .{ "", p.depth * 2, @typeName(T) });
     p.depth += 1;
     defer p.depth -= 1;
-    if (p.peek(0) != '{') return error.InvalidStruct;
-    p.index += 1;
+    _ = try expectNext(.lbrace, error.InvalidStruct, p);
+
     var t: T = undefined;
 
     while (true) {
-        p.skipWsAndComments();
-        const c = p.peek(0) orelse return error.Eof;
-        debug("{s: <[1]}parseStruct '{2?c}'", .{ "", p.depth * 2, c });
-        if (c == '}') {
-            p.index += 1;
-            break;
-        }
+        const c = p.tokenizer.next();
+        debug("{s: <[1]}parseStruct '{2s}'", .{ "", p.depth * 2, @tagName(c.tag) });
+        if (c.tag == .rbrace) break;
 
-        const field = switch (c) {
-            ':' => blk: {
-                const key = try parseKeyword(p);
-                break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.src)[1..]) orelse
+        const field = switch (c.tag) {
+            .keyword => blk: {
+                const key = Value{ .keyword = c };
+                break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.tokenizer.src)[1..]) orelse
                     return error.InvalidStructField;
             },
             else => return err(p, "unexpected '{c}'", .{c}, error.InvalidStruct),
         };
         debug("{s: <[1]}parseStruct key {2s}", .{ "", p.depth * 2, @tagName(field) });
-        p.skipWsAndComments();
+
         switch (field) {
             inline else => |tag| {
-                @field(t, @tagName(tag)) = try parseType(std.meta.FieldType(T, tag), T, p);
+                @field(t, @tagName(tag)) = try parseType(@FieldType(T, @tagName(tag)), T, p);
             },
         }
         seen_fields.insert(field);
@@ -580,38 +553,43 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
 
 pub fn fmtParseResult(
     parse_result: ParseResult,
-    src: []const u8,
+    src: [:0]const u8,
 ) std.fmt.Formatter(formatParseResult) {
-    return .{ .data = .{ .src = src, .parse_result = parse_result } };
+    return .{ .data = .{ .src = src, .parse_result = parse_result, .parent = null } };
 }
 
 fn formatParseResult(
-    data: struct { src: []const u8, parse_result: ParseResult },
+    data: struct { src: [:0]const u8, parse_result: ParseResult, parent: ?Value },
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
-    for (data.parse_result.values[0..data.parse_result.top_level_values], 0..) |v, ws_index| {
+    for (data.parse_result.values[0..data.parse_result.top_level_values], 0..) |v, value_id| {
         try formatValue(.{
             .value = v,
-            .ws_index = @intCast(ws_index),
+            .value_id = @intCast(value_id),
             .src = data.src,
             .parse_result = data.parse_result,
+            .parent = data.parent,
         }, fmt, options, writer);
     }
+    const ws = data.parse_result.final_ws;
+    try writer.writeAll(data.src[ws[0]..ws[1]]);
 }
 
 pub fn fmtValue(
     value: Value,
-    ws_index: u32,
-    src: []const u8,
+    value_id: u32,
+    src: [:0]const u8,
     parse_result: ParseResult,
+    parent: ?Value,
 ) std.fmt.Formatter(formatValue) {
     return .{ .data = .{
         .value = value,
-        .ws_index = ws_index,
+        .value_id = value_id,
         .src = src,
         .parse_result = parse_result,
+        .parent = parent,
     } };
 }
 
@@ -619,9 +597,10 @@ fn formatValue(
     data: struct {
         value: Value,
         /// the offset of value within parse_result.values
-        ws_index: u32,
-        src: []const u8,
+        value_id: u32,
+        src: [:0]const u8,
         parse_result: ParseResult,
+        parent: ?Value,
     },
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
@@ -629,8 +608,14 @@ fn formatValue(
 ) !void {
     const v = data.value;
 
-    if (data.ws_index < data.parse_result.whitespaces.len)
-        try writer.writeAll(data.parse_result.whitespaces[data.ws_index][0].src(data.src));
+    // print leading whitespace
+    if (data.parse_result.wss.len > 0) {
+        const ws = data.parse_result.wss[data.value_id];
+        try writer.writeAll(data.src[ws[0]..ws[1]]);
+    } else if (data.parent == null) { // skip if inside list, vec, map or set. those are handled in loops below
+        // print a single space between top level values except first one
+        try writer.writeAll(" "[0..@intFromBool(data.value_id > 0)]);
+    }
 
     switch (v) {
         .true,
@@ -642,36 +627,71 @@ fn formatValue(
         .symbol,
         .float,
         => |t| try writer.writeAll(t.src(data.src)),
-        .character => |c| try writer.print("\\{u}", .{c}),
+        .character => |c| switch (c) {
+            ' ' => try writer.writeAll("\\space"),
+            '\n' => try writer.writeAll("\\newline"),
+            '\t' => try writer.writeAll("\\tab"),
+            '\r' => try writer.writeAll("\\return"),
+            else => if (c < 256 and !std.ascii.isPrint(@truncate(c)))
+                try writer.print("\\u{u}", .{c + '0'})
+            else if (c >= 256)
+                try writer.print("\\u{u}", .{c})
+            else
+                try writer.print("\\{u}", .{c}),
+        },
         .integer => |x| try std.fmt.formatType(x, fmt, options, writer, 0),
-        .list => |l| for (l) |*item| {
-            const index: u32 = @intCast(item - data.parse_result.values.ptr);
-            try std.fmt.formatType(fmtValue(item.*, index, data.src, data.parse_result), fmt, options, writer, 0);
+        .tagged => |tag| {
+            try writer.writeAll(tag[0].src(data.src));
+            const value_id: u32 = @intCast(tag[1] - data.parse_result.values.ptr);
+            try std.fmt.formatType(fmtValue(tag[1].*, value_id, data.src, data.parse_result, data.parent), fmt, options, writer, 0);
         },
-        .vector => |l| for (l) |*item| {
-            const index: u32 = @intCast(item - data.parse_result.values.ptr);
-            try std.fmt.formatType(fmtValue(item.*, index, data.src, data.parse_result), fmt, options, writer, 0);
+        .list => |l| {
+            try writer.writeAll(data.src[l.leading_ws[0]..l.leading_ws[1]]);
+            for (l.values, 0..) |*item, i| {
+                if (data.parse_result.wss.len == 0 and i > 0) try writer.writeByte(' ');
+                const value_id: u32 = @intCast(item - data.parse_result.values.ptr);
+                try std.fmt.formatType(fmtValue(item.*, value_id, data.src, data.parse_result, v), fmt, options, writer, 0);
+            }
+            try writer.writeAll(data.src[l.trailing_ws[0]..l.trailing_ws[1]]);
         },
-        .map => |m| for (m.keys, m.values) |*k, *sv| {
-            const kindex: u32 = @intCast(k - data.parse_result.values.ptr);
-            try std.fmt.formatType(fmtValue(k.*, kindex, data.src, data.parse_result), fmt, options, writer, 0);
-            const vindex: u32 = @intCast(sv - data.parse_result.values.ptr);
-            try std.fmt.formatType(fmtValue(sv.*, vindex, data.src, data.parse_result), fmt, options, writer, 0);
+        .vector => |l| {
+            try writer.writeAll(data.src[l.leading_ws[0]..l.leading_ws[1]]);
+            for (l.values, 0..) |*item, i| {
+                if (data.parse_result.wss.len == 0 and i > 0) try writer.writeByte(' ');
+                const value_id: u32 = @intCast(item - data.parse_result.values.ptr);
+                try std.fmt.formatType(fmtValue(item.*, value_id, data.src, data.parse_result, v), fmt, options, writer, 0);
+            }
+            try writer.writeAll(data.src[l.trailing_ws[0]..l.trailing_ws[1]]);
         },
-        .set => |keys| for (keys) |*k| {
-            const index: u32 = @intCast(k - data.parse_result.values.ptr);
-            try std.fmt.formatType(fmtValue(k.*, index, data.src, data.parse_result), fmt, options, writer, 0);
+        .map => |m| {
+            try writer.writeAll(data.src[m.leading_ws[0]..m.leading_ws[1]]);
+            for (m.keys, m.values, 0..) |*k, *sv, i| {
+                if (data.parse_result.wss.len == 0 and i > 0) try writer.writeAll(", ");
+                const kvalue_id: u32 = @intCast(k - data.parse_result.values.ptr);
+                try std.fmt.formatType(fmtValue(k.*, kvalue_id, data.src, data.parse_result, v), fmt, options, writer, 0);
+                if (data.parse_result.wss.len == 0) try writer.writeByte(' ');
+                const vvalue_id: u32 = @intCast(sv - data.parse_result.values.ptr);
+                try std.fmt.formatType(fmtValue(sv.*, vvalue_id, data.src, data.parse_result, v), fmt, options, writer, 0);
+            }
+            try writer.writeAll(data.src[m.trailing_ws[0]..m.trailing_ws[1]]);
+        },
+        .set => |set| {
+            try writer.writeAll(data.src[set.leading_ws[0]..set.leading_ws[1]]);
+            for (set.values, 0..) |*k, i| {
+                if (data.parse_result.wss.len == 0 and i > 0) try writer.writeByte(' ');
+                const value_id: u32 = @intCast(k - data.parse_result.values.ptr);
+                try std.fmt.formatType(fmtValue(k.*, value_id, data.src, data.parse_result, v), fmt, options, writer, 0);
+            }
+            try writer.writeAll(data.src[set.trailing_ws[0]..set.trailing_ws[1]]);
         },
     }
-
-    if (data.ws_index < data.parse_result.whitespaces.len)
-        try writer.writeAll(data.parse_result.whitespaces[data.ws_index][1].src(data.src));
 }
 
 fn err(_: *const Parser, comptime fmt: []const u8, args: anytype, e: ParseError) ParseError {
     if (@inComptime()) {
         @compileError(std.fmt.comptimePrint(fmt, args));
     } else if (!@import("builtin").is_test) log.err(fmt, args);
+    // TODO report error location as line/column
     return e;
 }
 
@@ -694,469 +714,373 @@ fn validateSym(slice: []const u8) !void {
     }
 }
 
-fn parseSym(p: *Parser) !Value {
-    debug("{s: <[1]}parseSym()", .{ "", p.depth * 2 });
-    assert(!std.ascii.isDigit(p.peek(0).?));
-
-    const tagged = p.peek(0) == '#' or p.peek(0) == ':';
-    const start = p.index;
-    // Symbols are used to represent identifiers, and should map to something
-    // other than strings, if possible.
-    //
-    // Symbols begin with a non-numeric character and can contain alphanumeric
-    // characters and . * + ! - _ ? $ % & = < >. If -, + or . are the first character,
-    // the second character (if any) must be non-numeric. Additionally, : # are
-    // allowed as constituent characters in symbols other than as the first
-    // character.
-    //
-
-    // / has special meaning in symbols. It can be used once only in the middle of a
-    // symbol to separate the prefix (often a namespace) from the name, e.g.
-    // my-namespace/foo. / by itself is a legal symbol, but otherwise neither the
-    // prefix nor the name part can be empty when the symbol contains /.
-    var slash_index: ?u32 = null;
-    while (p.peek(0)) |c| {
-        if (!isSymChar(c)) break;
-        if (c == '/') {
-            if (slash_index != null) return error.InvalidSymbol;
-            slash_index = p.index - start;
-        }
-        p.index += 1;
+fn consume(tag: Token.Tag, p: *Parser) ?Token {
+    if (p.tokenizer.isTag(tag)) {
+        return p.tokenizer.next();
     }
-
-    const slice = p.src[start..p.index];
-    if (slice.len == 0) return error.InvalidSymbol;
-
-    if (std.meta.stringToEnum(Value.Tag, slice)) |v| {
-        switch (v) {
-            inline .nil, .true, .false => |tag| {
-                return @unionInit(Value, @tagName(tag), undefined);
-            },
-            else => {},
-        }
-    }
-
-    if (slash_index) |i| blk: {
-        assert(slice[i] == '/');
-        if (slice.len == 1) break :blk;
-        if (i == 0 or i + 1 == slice.len) return error.InvalidSymbol;
-        try validateSym(slice[0..i][@intFromBool(tagged)..]);
-        // If a symbol has a prefix and /, the following name component should follow the
-        // first-character restrictions for symbols as a whole. This is to avoid ambiguity
-        // in reading contexts where prefixes might be presumed as implicitly included
-        // namespaces and elided thereafter.
-        if (i + 1 == slice.len) return error.InvalidSymbol;
-        try validateSym(slice[i + 1 ..]);
-    } else try validateSym(slice[@intFromBool(tagged)..]);
-
-    return .{ .symbol = .init(start, p.index) };
+    return null;
 }
 
-fn parseNum(p: *Parser) !Value {
-    const start = p.index;
-    p.skipWhileFn(Parser.isIntOrFloatDigit);
-    const src = p.src[start..p.index];
-    debug("{s: <[1]}parseNum() '{2s}'", .{ "", p.depth * 2, src });
-
-    return if (mem.indexOfScalar(u8, src, '.')) |_|
-        .{ .float = .init(start, p.index) }
-    else
-        .{ .integer = try std.fmt.parseInt(i128, src, 10) };
+fn expectNext(tag: Token.Tag, e: ParseError, p: *Parser) ParseError!Token {
+    const t = p.tokenizer.next();
+    if (t.tag != tag) {
+        debug("expectNext wanted '{s}' got '{s}'", .{ @tagName(tag), @tagName(t.tag) });
+        return e;
+    }
+    return t;
 }
 
-fn parseString(p: *Parser) !Value {
-    debug("{s: <[1]}parseString()", .{ "", p.depth * 2 });
-    const start = p.index;
-    p.index += 1;
-    while (true) : (p.index += 1) {
-        const c = p.peek(0) orelse return error.InvalidString;
-        switch (c) {
-            '"' => break,
-            '\\' => {
-                const c2 = p.peek(1) orelse return error.InvalidEscape;
-                switch (c2) {
-                    'n', 'r', 't', '\\', '"' => p.index += 1,
-                    else => return error.InvalidEscape,
-                }
-            },
-            else => {},
-        }
-    }
-    p.index += 1;
-    return .{ .string = .init(start, p.index) };
+fn parseInt(p: *Parser, t: Token) !Value {
+    debug("{s: <[1]}parseInt('{2s}')", .{ "", p.depth * 2, t.src(p.tokenizer.src) });
+    assert(t.tag == .int);
+    return;
 }
 
 // Characters are preceded by a backslash: \c, \newline, \return, \space
 // and \tab yield the corresponding characters. Unicode characters are
 // represented with \uNNNN as in Java. Backslash cannot be followed by
 // whitespace.
-fn parseChar(p: *Parser) !Value {
+fn parseChar(p: *Parser, t: Token) !Value {
     debug("{s: <[1]}parseChar()", .{ "", p.depth * 2 });
-    assert(p.peek(0) == '\\');
-    p.index += 1;
+    assert(t.tag == .char);
+    const src0 = t.loc.src(p.tokenizer.src);
+    assert(src0[0] == '\\');
+    const src = src0[1..];
+    const char: u21 = if (src.len == 1) src[0] else switch (src[0]) {
+        'u' => try std.fmt.parseInt(u21, src[1..], 16),
+        'n' => if (std.mem.eql(u8, "newline", src)) '\n' else return error.InvalidChar,
+        'r' => if (std.mem.eql(u8, "return", src)) '\r' else return error.InvalidChar,
+        's' => if (std.mem.eql(u8, "space", src)) ' ' else return error.InvalidChar,
+        't' => if (std.mem.eql(u8, "tab", src)) '\t' else return error.InvalidChar,
+        else => return error.InvalidChar,
+    };
+    debug("{s: <[1]}parseChar() result {2}:'{2u}'", .{ "", p.depth * 2, char });
 
-    const rest = p.src[p.index..];
-    inline for ([_]struct { []const u8, u21 }{
-        .{ "space", ' ' },
-        .{ "newline", '\n' },
-        .{ "return", '\r' },
-        .{ "tab", '\t' },
-        .{ "\\", '\\' },
-    }) |char_escape| {
-        if (std.mem.startsWith(u8, rest, char_escape[0])) {
-            p.index += char_escape[0].len;
-            return .{ .character = char_escape[1] };
-        }
-    }
-
-    if (p.peek(0) == 'u') {
-        p.index += 1;
-        const start = p.index;
-        const end = @min(start + 5, p.src.len);
-        while (p.index < end) : (p.index += 1) {
-            if (!std.ascii.isHex(p.src[p.index])) break;
-        }
-        if (p.index == start) return .{ .character = 'u' };
-        const slice = p.src[start..p.index];
-        const c = try std.fmt.parseUnsigned(u21, slice, 16);
-        if (!std.unicode.utf8ValidCodepoint(c)) return error.InvalidChar;
-        return .{ .character = c };
-    }
-
-    return .{ .character = p.next() orelse return error.InvalidChar };
+    return .{ .character = char };
 }
 
-// Keywords are identifiers that typically designate themselves. They are
-// semantically akin to enumeration values. Keywords follow the rules of
-// symbols, except they can (and must) begin with :, e.g. :fred or :my/fred.
-fn parseKeyword(p: *Parser) !Value {
-    debug("{s: <[1]}parseKeyword()", .{ "", p.depth * 2 });
-    assert(p.peek(0) == ':');
-    const start = p.index;
-    var sym = try parseSym(p);
-    sym.symbol.start = start;
-    return .{ .keyword = sym.symbol };
-}
-
-fn matchingEndChar(c: u8) u8 {
-    return switch (c) {
-        '(' => ')',
-        '[' => ']',
-        '{' => '}',
-        else => unreachable,
+fn pairedTag(tag: Token.Tag) Token.Tag {
+    return switch (tag) {
+        .lparen => .rparen,
+        .lbrace => .rbrace,
+        .lbracket => .rbracket,
+        .set => .rbrace,
+        else => std.debug.panic("unexpected tag '{s}'", .{@tagName(tag)}),
     };
 }
 
-fn parseOrMeasureList(p: *Parser, c: u8, comptime mode: ParseMode) ![]Value {
-    const index = p.index;
-    const len = try parseList(p, c, .measure, undefined, undefined);
+fn parseOrMeasureList(p: *Parser, t: Token, comptime mode: ParseMode) !ValueList {
+    const tokenizer = p.tokenizer;
+    const len, _ = try parseList(p, t, .measure, undefined, undefined);
     if (mode == .measure) {
-        var measured: []Value = undefined;
-        measured.len = len;
+        var measured: ValueList = undefined;
+        measured.values.len = len;
         return measured;
     }
-    // allocate space for values and whitespace
+    p.tokenizer = tokenizer;
+    // allocate space for values, wss
     const vs = p.values[0..len];
-    const ws = p.ws[0..len];
-    p.index = index;
     p.values = p.values[len..];
-    p.ws = p.ws[len..];
-    _ = try parseList(p, c, .allocate, vs, ws);
-    return vs;
+    const wss = p.wss[0..len];
+    p.wss = p.wss[len..];
+    _, const trailing_ws = try parseList(p, t, .allocate, vs, wss);
+    return .{
+        .values = vs,
+        .wss = wss,
+        .leading_ws = .{ t.loc.start, t.loc.end },
+        .trailing_ws = trailing_ws,
+    };
 }
 
 fn parseList(
     p: *Parser,
-    prefix: u8,
+    prefix: Token,
     comptime mode: ParseMode,
     result: []Value,
-    result_ws: [][2]Token,
-) ParseError!u32 {
-    debug("{s: <[1]}parseList('{2?c}', {3s})", .{ "", p.depth * 2, prefix, @tagName(mode) });
-    assert(prefix == '(' or prefix == '[');
+    result_wss: [][2]u32,
+) ParseError!struct { u32, [2]u32 } {
+    debug("{s: <[1]}parseList('{2s}', {3s})", .{ "", p.depth * 2, @tagName(prefix.tag), @tagName(mode) });
+    assert(prefix.tag == .lparen or prefix.tag == .lbracket);
     p.depth += 1;
     defer p.depth -= 1;
-    assert(p.peek(0) == prefix);
-    p.index += 1;
 
     var i: u32 = 0;
-    const end_char = matchingEndChar(prefix);
+    const end_tag = pairedTag(prefix.tag);
+    var trailing_ws: [2]u32 = undefined;
     while (true) : (i += 1) {
-        var next_non_ws = p.index;
-        const c = while (next_non_ws < p.src.len) : (next_non_ws += 1) {
-            if (!p.isWs(next_non_ws)) break p.src[next_non_ws];
-        } else return error.Eof;
-        debug("{s: <[1]}parseList('{2?c}')", .{ "", p.depth * 2, c });
-        if (c == end_char) {
-            p.index = next_non_ws;
+        const c = p.tokenizer.next();
+        debug("{s: <[1]}parseList('{2s}')", .{ "", p.depth * 2, @tagName(c.tag) });
+        if (c.tag == end_tag) {
+            trailing_ws = .{ c.loc.ws_start, c.loc.end };
+            p.last_token = c;
             break;
         }
         if (mode == .allocate) {
-            try parseValue(p, mode, result[i..].ptr, result_ws[i..].ptr);
+            try parseValue(p, c, mode, result[i..].ptr, result_wss[i..].ptr);
         } else {
-            try parseValue(p, mode, undefined, undefined);
+            try parseValue(p, c, mode, undefined, undefined);
         }
     }
 
-    return i;
+    return .{ i, trailing_ws };
 }
 
-fn parseOrMeasureMap(p: *Parser, comptime mode: ParseMode) !ValueMap {
-    const index = p.index;
-    const len = try parseMap(p, .measure, undefined, undefined);
+fn parseOrMeasureMap(p: *Parser, prefix: Token, comptime mode: ParseMode) !ValueMap {
+    const tokenizer = p.tokenizer;
+    const len = try parseMap(p, prefix, .measure, undefined);
     if (mode == .measure) {
         var measured: ValueMap = undefined;
         measured.keys.len = len;
         measured.values.len = len;
         return measured;
     }
-
+    p.tokenizer = tokenizer;
     const vs = p.values[0 .. len * 2];
-    const ws = p.ws[0 .. len * 2];
-    const map: ValueMap = .{ .keys = vs[0..len], .values = vs[len..] };
-    p.index = index;
+    const wss = p.wss[0 .. len * 2];
+    var map: ValueMap = .{
+        .keys = vs[0..len],
+        .key_wss = wss[0..len],
+        .values = vs[len..],
+        .value_wss = wss[len..],
+        .leading_ws = .{ prefix.loc.start, prefix.loc.end },
+        .trailing_ws = undefined,
+    };
     p.values = p.values[len * 2 ..];
-    p.ws = p.ws[len * 2 ..];
-    _ = try parseMap(p, .allocate, map, .{ ws[0..len], ws[len..] });
+    p.wss = p.wss[len * 2 ..];
+    _ = try parseMap(p, prefix, .allocate, &map);
     return map;
 }
 
-fn parseMap(p: *Parser, comptime mode: ParseMode, result: ValueMap, result_wss: [2][][2]Token) ParseError!u32 {
+fn parseMap(p: *Parser, prefix: Token, comptime mode: ParseMode, result: *ValueMap) ParseError!u32 {
+    assert(prefix.tag == .lbrace);
     debug("{s: <[1]}parseMap({2s})", .{ "", p.depth * 2, @tagName(mode) });
     defer debug("{s: <[1]}<parseMap({2s})", .{ "", p.depth * 2, @tagName(mode) });
     p.depth += 1;
     defer p.depth -= 1;
-    assert(p.peek(0) == '{');
-    p.index += 1;
 
     var i: u32 = 0;
     while (true) : (i += 1) {
-        var next_non_ws = p.index;
-        const c = while (next_non_ws < p.src.len) : (next_non_ws += 1) {
-            if (!p.isWs(next_non_ws)) break p.src[next_non_ws];
-        } else return error.Eof;
-        debug("{s: <[1]}parseMap '{2?c}'", .{ "", p.depth * 2, c });
-        if (c == '}') {
-            p.index = next_non_ws;
+        const c = p.tokenizer.next();
+        debug("{s: <[1]}parseMap '{2s}'", .{ "", p.depth * 2, @tagName(c.tag) });
+        if (c.tag == .rbrace) {
+            if (mode == .allocate) result.trailing_ws = .{ c.loc.ws_start, c.loc.end };
+            p.last_token = c;
             break;
         }
 
         if (mode == .allocate) {
-            parseValue(p, mode, result.keys[i..].ptr, result_wss[0][i..].ptr) catch |e| switch (e) {
+            parseValue(p, c, mode, result.keys[i..].ptr, result.key_wss[i..].ptr) catch |e| switch (e) {
                 error.EndOfMap => break,
                 else => return e,
             };
-            try parseValue(p, mode, result.values[i..].ptr, result_wss[1][i..].ptr);
+            try parseValue(p, p.tokenizer.next(), mode, result.values[i..].ptr, result.value_wss[i..].ptr);
         } else {
-            parseValue(p, mode, undefined, undefined) catch |e| switch (e) {
+            parseValue(p, c, mode, undefined, undefined) catch |e| switch (e) {
                 error.EndOfMap => break,
                 else => return e,
             };
-            try parseValue(p, mode, undefined, undefined);
+            try parseValue(p, p.tokenizer.next(), mode, undefined, undefined);
         }
     }
     debug("{s: <[1]}parseMap done len {2}", .{ "", p.depth * 2, i });
     return i;
 }
 
-fn parseOrMeasureSet(p: *Parser, comptime mode: ParseMode) ![]Value {
-    const index = p.index;
-    const len = try parseSet(p, .measure, undefined, undefined);
+fn parseOrMeasureSet(p: *Parser, prefix: Token, comptime mode: ParseMode) !ValueList {
+    const tokenizer = p.tokenizer;
+    assert(prefix.tag == .set);
+    const len, _ = try parseSet(p, prefix, .measure, undefined, undefined);
     if (mode == .measure) {
-        var measured: []Value = &.{};
-        measured.len = len;
+        var measured: ValueList = undefined;
+        measured.values.len = len;
         return measured;
     }
+    p.tokenizer = tokenizer;
 
     const vs = p.values[0..len];
-    const ws = p.ws[0..len];
-    p.index = index;
     p.values = p.values[len..];
-    p.ws = p.ws[len..];
-    _ = try parseSet(p, .allocate, vs, ws);
-    return vs;
+    const wss = p.wss[0..len];
+    p.wss = p.wss[len..];
+    _, const trailing_ws = try parseSet(p, prefix, .allocate, vs, wss);
+    return .{
+        .values = vs,
+        .wss = wss,
+        .leading_ws = .{ prefix.loc.start, prefix.loc.end },
+        .trailing_ws = trailing_ws,
+    };
 }
 
 fn parseSet(
     p: *Parser,
+    prefix: Token,
     comptime mode: ParseMode,
     result: []Value,
-    result_ws: [][2]Token,
-) ParseError!u32 {
+    result_wss: [][2]u32,
+) ParseError!struct { u32, [2]u32 } {
+    assert(prefix.tag == .set);
     debug("{s: <[1]}parseSet({2s})", .{ "", p.depth * 2, @tagName(mode) });
     p.depth += 1;
     defer p.depth -= 1;
-    assert(p.peek(0) == '#' and p.peek(1) == '{');
-    p.index += 2;
+    var trailing_ws: [2]u32 = undefined;
     var i: u32 = 0;
     while (true) : (i += 1) {
-        var next_non_ws = p.index;
-        const c = while (next_non_ws < p.src.len) : (next_non_ws += 1) {
-            if (!p.isWs(next_non_ws)) break p.src[next_non_ws];
-        } else return error.Eof;
-        debug("{s: <[1]}parseSet '{2?c}'", .{ "", p.depth * 2, c });
-        if (c == '}') {
-            p.index = next_non_ws;
+        const c = p.tokenizer.next();
+        debug("{s: <[1]}parseSet '{2s}' '{3s}'", .{ "", p.depth * 2, @tagName(c.tag), c.loc.src(p.tokenizer.src) });
+        if (c.tag == .rbrace) {
+            trailing_ws = .{ c.loc.ws_start, c.loc.end };
+            p.last_token = c;
             break;
         }
 
         if (mode == .allocate) {
-            try parseValue(p, mode, result[i..].ptr, result_ws[i..].ptr);
+            try parseValue(p, c, mode, result[i..].ptr, result_wss[i..].ptr);
         } else {
-            try parseValue(p, mode, undefined, undefined);
+            try parseValue(p, c, mode, undefined, undefined);
         }
     }
 
-    return i;
+    return .{ i, trailing_ws };
 }
 
-fn parseDiscard(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) ParseError!Value {
+fn parseDiscard(p: *Parser, t: Token, comptime mode: ParseMode) ParseError!Value {
+    assert(t.tag == .discard);
     p.depth += 1;
     defer p.depth -= 1;
-    assert(p.peek(0) == '#');
-    assert(p.peek(1) == '_');
-    p.index += 2;
-    p.skipWsAndComments();
-    const ignored = try parseValueInner(p, mode, leading_ws);
-    debug("{s: <[1]}parseDiscard() ignored {2s}", .{ "", p.depth * 2, @tagName(ignored) });
-    const is_container = @intFromBool(@intFromEnum(ignored) >= @intFromEnum(Value.Tag.list));
-    p.index += is_container;
 
-    p.skipWsAndComments();
-    leading_ws.end = p.index;
-    var next_dummy_leading_ws = Token.init(p.index, undefined);
-    if (p.eos()) return error.Eof;
-    debug("{s: <[1]}parseDiscard() no eos", .{ "", p.depth * 2 });
-    const v = try parseValueInner(p, mode, &next_dummy_leading_ws);
+    const t2 = p.tokenizer.next();
+    const discard = try parseValueInner(p, t2, mode);
+    debug("{s: <[1]}parseDiscard() ignored {2s}", .{ "", p.depth * 2, @tagName(discard) });
+    // TODO merge ws. pretty sure discards won't format correctly
+
+    const t3 = p.tokenizer.next();
+    return try parseValueInner(p, t3, mode);
+}
+
+fn parseTagged(p: *Parser, t: Token, comptime mode: ParseMode) ParseError!Value {
+    // Upon encountering a tag, the reader will first read the
+    // next element (which may itself be or comprise other
+    // tagged elements), then pass the result to the
+    // corresponding handler for further interpretation, and
+    // the result of the handler will be the data value yielded
+    // by the tag + tagged element, i.e. reading a tag and
+    // tagged element yields one value.
+    // If a reader encounters a tag for which no handler is
+    // registered, the implementation can either report an error,
+    // call a designated 'unknown element' handler, or create a
+    // well-known generic representation that contains both the
+    // tag and the tagged element, as it sees fit. Note that the
+    // non-error strategies allow for readers which are capable of
+    // reading any and all edn, in spite of being unaware of the
+    // details of any extensions present.
+    // Current strategy is to ignore the tagged symbol, adding it
+    // to leading ws and fall back on default value parsing when
+    // no handler is present.
+
+    const t2 = p.tokenizer.next();
+    const next = try parseValueInner(p, t2, mode);
+    const v = if (p.handlers.get(t.src(p.tokenizer.src))) |handler| v: {
+        const cur = p.tokenizer.peek();
+        const v = try handler(
+            next,
+            p.tokenizer.src[t2.loc.start..cur.loc.ws_start],
+            p.tokenizer.src,
+            p.options.userdata,
+        );
+        break :v v;
+    } else next;
+
+    if (mode == .measure) {
+        p.measured.values += 2;
+    } else {
+        p.values[0] = .{ .tagged = .{ t, &p.values[1] } };
+        p.values[1] = v;
+        defer p.values = p.values[2..];
+        if (p.options.whitespace == .include) {
+            p.wss[0] = .{ t.loc.ws_start, t.loc.start };
+            p.wss[1] = .{ t2.loc.ws_start, t2.loc.start };
+            p.wss = p.wss[2..];
+        }
+        return p.values[0];
+    }
     return v;
 }
 
 // TODO allow users to skip expensive parsing such as parsing integers
 pub fn userParseValue(p: *Parser) !Value {
-    var dummy_ws: Token = undefined;
-    return parseValueInner(p, .measure, &dummy_ws);
+    return parseValueInner(p, p.tokenizer.next(), .measure);
 }
 
-fn parseValueInner(p: *Parser, comptime mode: ParseMode, leading_ws: *Token) !Value {
-    const c = p.peek(0).?;
-    debug("{s: <[1]}parseValueInner() '{2?c}'", .{ "", p.depth * 2, c });
-    return switch (c) {
-        '0'...'9', '-', '+' => try parseNum(p),
-        '"' => try parseString(p),
-        '\\' => try parseChar(p),
-        ':' => try parseKeyword(p),
-        '(' => .{ .list = try parseOrMeasureList(p, c, mode) },
-        '[' => .{ .vector = try parseOrMeasureList(p, c, mode) },
-        '{' => .{ .map = try parseOrMeasureMap(p, mode) },
-        '}' => return error.EndOfMap,
-        '#' => if (p.peek(1)) |d| switch (d) {
-            '{' => .{ .set = try parseOrMeasureSet(p, mode) },
-            '_' => try parseDiscard(p, mode, leading_ws),
-            else => blk: {
-                const sym = try parseSym(p);
-                // Upon encountering a tag, the reader will first read the
-                // next element (which may itself be or comprise other
-                // tagged elements), then pass the result to the
-                // corresponding handler for further interpretation, and
-                // the result of the handler will be the data value yielded
-                // by the tag + tagged element, i.e. reading a tag and
-                // tagged element yields one value.
+fn parseValueInner(p: *Parser, t: Token, comptime mode: ParseMode) !Value {
+    // std.debug.print("{s: <[1]}{2s}:\n  ws '{3s}'\n  content '{4s}'\n", .{ "", p.depth * 2, @tagName(t.tag), p.tokenizer.src[t.loc.ws_start..t.loc.start], t.src(p.tokenizer.src) });
+    debug("{s: <[1]}parseValueInner() '{2s}'", .{ "", p.depth * 2, @tagName(t.tag) });
+    if (p.last_token.loc.end == t.loc.start and
+        !t.tag.isClosing() and
+        !p.last_token.tag.isOpening())
+    {
+        return error.MissingWhitespaceBetweenValues;
+    }
+    p.last_token = t;
 
-                // If a reader encounters a tag for which no handler is
-                // registered, the implementation can either report an error,
-                // call a designated 'unknown element' handler, or create a
-                // well-known generic representation that contains both the
-                // tag and the tagged element, as it sees fit. Note that the
-                // non-error strategies allow for readers which are capable of
-                // reading any and all edn, in spite of being unaware of the
-                // details of any extensions present.
-
-                // Current strategy is to ignore the tagged symbol, adding it
-                // to leading ws and fall back on default value parsing when
-                // no handler is present.
-                p.skipWsAndComments();
-                leading_ws.end = p.index;
-                const next_start = p.index;
-                var next_dummy_leading_ws = Token.init(p.index, undefined);
-                const next = try parseValueInner(p, mode, &next_dummy_leading_ws);
-                const v = if (p.handlers.get(sym.symbol.src(p.src))) |handler| v: {
-                    const next_end = p.index;
-                    const v = try handler(next, p.src[next_start..next_end], p.src, p.options.userdata);
-                    break :v v;
-                } else v: {
-                    break :v next;
-                };
-                break :blk v;
-            },
-        } else return err(p, "unexpected end of file '{c}'", .{c}, error.Eof),
-        else => return if (isSymChar(c))
-            try parseSym(p)
-        else
-            err(p, "unexpected character '{c}'", .{c}, error.Parse),
+    return switch (t.tag) {
+        .int => .{ .integer = try std.fmt.parseInt(i128, t.src(p.tokenizer.src), 0) },
+        .str => .{ .string = t },
+        .char => try parseChar(p, t),
+        .keyword => .{ .keyword = t },
+        .lparen => .{ .list = try parseOrMeasureList(p, t, mode) },
+        .lbracket => .{ .vector = try parseOrMeasureList(p, t, mode) },
+        .lbrace => .{ .map = try parseOrMeasureMap(p, t, mode) },
+        .rbrace => return error.EndOfMap,
+        .set => .{ .set = try parseOrMeasureSet(p, t, mode) },
+        .discard => try parseDiscard(p, t, mode),
+        .tagged => try parseTagged(p, t, mode),
+        .eof => return err(p, "unexpected end of file", .{}, error.Eof),
+        .symbol => .{ .symbol = t },
+        .invalid => return err(p, "invalid token '{s}'", .{t.src(p.tokenizer.src)}, error.InvalidToken),
+        .float => .{ .float = t },
+        .nil => .nil,
+        .true => .true,
+        .false => .false,
+        .rparen => unreachable,
+        .rbracket => unreachable,
     };
 }
-fn parseValue(
-    p: *Parser,
-    comptime mode: ParseMode,
-    result: [*]Value,
-    whitespace_result: [*][2]Token,
-) ParseError!void {
-    // track leading ws
-    var leading_ws = Token.init(p.index, undefined);
-    p.skipWsAndComments();
-    leading_ws.end = p.index;
-    if (p.last_value_end == p.index) return error.MissingWhitespaceBetweenValues;
 
-    const v = try parseValueInner(p, mode, &leading_ws);
+fn parseValue(p: *Parser, t: Token, comptime mode: ParseMode, result: [*]Value, result_wss: [*][2]u32) ParseError!void {
+    const v = try parseValueInner(p, t, mode);
 
-    // leading ws includes any container opening chars such as '(', '#{'
-    const is_container = @intFromBool(@intFromEnum(v) >= @intFromEnum(Value.Tag.list));
-    leading_ws.end += is_container;
-    leading_ws.end += @intFromBool(v == .set);
-
-    // trailing ws indludes any container closing chars such as ')', '}'
-    var trailing_ws = Token.init(p.index, undefined);
-    p.index += is_container;
-    p.last_value_end = p.index;
-    p.skipWsAndComments();
-    trailing_ws.end = p.index;
-    if (p.options.flags.whitespace == .include) {
-        if (mode == .measure) {
-            p.measured.whitespaces += 1;
-        } else {
-            whitespace_result[0] = .{ leading_ws, trailing_ws };
-        }
-    }
-
-    debug(
-        "{s: <[1]}parseValue({2s}) leadingws '{3s}' trailingws '{4s}'",
-        .{ "", p.depth * 2, @tagName(mode), leading_ws.src(p.src), trailing_ws.src(p.src) },
-    );
+    debug("{s: <[1]}parseValue({2s})", .{ "", p.depth * 2, @tagName(mode) });
 
     if (mode == .measure) {
         p.measured.values += 1;
     } else {
         result[0] = v;
+        if (p.options.whitespace == .include) result_wss[0] = .{ t.loc.ws_start, t.loc.start };
     }
 }
 
-fn parseValues(p: *Parser, comptime mode: ParseMode) !void {
+/// returns the final whitespace at eof
+fn parseValues(p: *Parser, comptime mode: ParseMode) ![2]u32 {
     // top level values are stored at the beginning of values/whitespaces
     var top_level_vs: []Value = p.values_start[0..p.measured.top_level_values];
-    var top_level_ws: [][2]Token = p.ws_start[0..p.measured.top_level_values];
+    var top_level_wss: [][2]u32 = p.wss_start[0..p.measured.top_level_values];
     debug("{s: <[1]}parseValues({2s}) {3}", .{ "", p.depth * 2, @tagName(mode), p.measured });
 
-    var i: u32 = 0;
-    while (!p.eos()) : (i += 1) {
+    var final_ws: [2]u32 = undefined;
+    while (true) {
+        const t = p.tokenizer.next();
+        if (t.tag == .eof) {
+            final_ws = .{ t.loc.ws_start, t.loc.end };
+            break;
+        }
         if (mode == .allocate) {
-            parseValue(p, mode, top_level_vs.ptr, top_level_ws.ptr) catch |e| switch (e) {
+            parseValue(p, t, mode, top_level_vs.ptr, top_level_wss.ptr) catch |e| switch (e) {
                 error.Eof => break,
                 else => return e,
             };
             top_level_vs = top_level_vs[1..];
-            top_level_ws = top_level_ws[1..];
+            top_level_wss = top_level_wss[1..];
         } else {
-            parseValue(p, mode, undefined, undefined) catch |e| switch (e) {
+            parseValue(p, t, mode, undefined, undefined) catch |e| switch (e) {
                 error.Eof => break,
                 else => return e,
             };
@@ -1164,15 +1088,26 @@ fn parseValues(p: *Parser, comptime mode: ParseMode) !void {
         }
     }
 
-    if (mode == .allocate) {
-        assert(top_level_vs.len == 0);
-        assert(top_level_ws.len == 0);
-    }
+    if (mode == .allocate) assert(top_level_vs.len == 0);
+
+    return final_ws;
 }
 
 const log = std.log.scoped(.edn);
 
 fn debug(comptime fmt: []const u8, args: anytype) void {
-    if (!@inComptime())
-        log.debug(fmt, args);
+    _ = fmt; // autofix
+    _ = args; // autofix
+    if (!@inComptime()) {
+        // log.debug(fmt, args);
+        // std.debug.print(fmt ++ "\n", args);
+    }
 }
+
+const std = @import("std");
+const mem = std.mem;
+const Allocator = mem.Allocator;
+const assert = std.debug.assert;
+
+pub const Parser = @import("Parser.zig");
+pub const Tokenizer = @import("Tokenizer.zig");

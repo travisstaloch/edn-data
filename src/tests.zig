@@ -4,7 +4,7 @@ const talloc = testing.allocator;
 
 const edn = @import("extensible-data-notation");
 
-fn expectTag(src: []const u8, tag: edn.Value.Tag) !void {
+fn expectTag(src: [:0]const u8, tag: edn.Value.Tag) !void {
     // std.debug.print("src '{s}'\n", .{src});
     const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer res.deinit(talloc);
@@ -38,21 +38,22 @@ test "map" {
 
     const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer result.deinit(talloc);
-    try testing.expectEqual(7, result.values.len);
-    try testing.expectEqual(1, result.top_level_values);
-    try testing.expectEqual(.map, std.meta.activeTag(result.values[0]));
-    try testing.expectEqual(.keyword, std.meta.activeTag(result.values[1]));
-    try testing.expectEqual(.keyword, std.meta.activeTag(result.values[2]));
-    try testing.expectEqual(.keyword, std.meta.activeTag(result.values[3]));
-    try testing.expectEqual(.integer, std.meta.activeTag(result.values[4]));
-    try testing.expectEqual(.float, std.meta.activeTag(result.values[5]));
-    try testing.expectEqual(.integer, std.meta.activeTag(result.values[6]));
-    try testing.expectEqual(3, result.values[0].map.keys.len);
+    try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+}
+
+test "fmt chars" {
+    const src =
+        \\WS #{\space \tab \return \newline \, \u0}
+        \\
+    ;
+
+    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
+    defer result.deinit(talloc);
 
     try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
 
-test "list basic" {
+test "list" {
     const src =
         \\(defrecord
         \\  MenuItem
@@ -61,39 +62,6 @@ test "list basic" {
 
     const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer result.deinit(talloc);
-    try testing.expectEqual(1, result.top_level_values);
-    try testing.expectEqual(6, result.values.len);
-    try testing.expectEqual(.list, std.meta.activeTag(result.values[0]));
-    try testing.expectEqual(.symbol, std.meta.activeTag(result.values[1]));
-    try testing.expectEqual(.symbol, std.meta.activeTag(result.values[2]));
-    try testing.expectEqual(.vector, std.meta.activeTag(result.values[3]));
-    try testing.expectEqual(.symbol, std.meta.activeTag(result.values[4]));
-    try testing.expectEqual(.symbol, std.meta.activeTag(result.values[5]));
-
-    const top_list = result.values[0];
-    try testing.expectEqual(3, top_list.list.len);
-    try testing.expectEqualStrings("(", result.whitespaces[0][0].src(src));
-    try testing.expectEqualStrings(")", result.whitespaces[0][1].src(src));
-
-    try testing.expectEqualStrings("", result.whitespaces[1][0].src(src));
-    try testing.expectEqualStrings("\n  ", result.whitespaces[1][1].src(src));
-    try testing.expectEqualStrings("", result.whitespaces[2][0].src(src));
-    try testing.expectEqualStrings("\n  ", result.whitespaces[2][1].src(src));
-
-    const list2 = top_list.list[2];
-    try testing.expectEqual(.vector, std.meta.activeTag(list2));
-    try testing.expectEqualStrings("[", result.whitespaces[3][0].src(src));
-    try testing.expectEqualStrings("]", result.whitespaces[3][1].src(src));
-
-    const vec = list2.vector;
-    try testing.expectEqual(2, vec.len);
-    try testing.expectEqualStrings("", result.whitespaces[4][0].src(src));
-    try testing.expectEqualStrings(" ", result.whitespaces[4][1].src(src));
-    try testing.expectEqual(.symbol, std.meta.activeTag(vec[0]));
-    try testing.expectEqual(.symbol, std.meta.activeTag(vec[1]));
-    try testing.expectEqualStrings("", result.whitespaces[5][0].src(src));
-    try testing.expectEqualStrings("", result.whitespaces[5][1].src(src));
-
     try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
 
@@ -101,21 +69,6 @@ test "nested list" {
     const src = " ( [] {} ) ";
     const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer result.deinit(talloc);
-
-    const list_vi = result.values[0];
-    try testing.expectEqual(.list, std.meta.activeTag(list_vi));
-    try testing.expectEqualStrings(" (", result.whitespaces[0][0].src(src));
-    try testing.expectEqualStrings(") ", result.whitespaces[0][1].src(src));
-
-    try testing.expectEqual(3, result.values.len);
-    try testing.expectEqual(.vector, std.meta.activeTag(result.values[1]));
-    try testing.expectEqual(.map, std.meta.activeTag(result.values[2]));
-    try testing.expectEqual(2, result.values[0].list.len);
-    try testing.expectEqualStrings(" [", result.whitespaces[1][0].src(src));
-    try testing.expectEqualStrings("] ", result.whitespaces[1][1].src(src));
-    try testing.expectEqualStrings("{", result.whitespaces[2][0].src(src));
-    try testing.expectEqualStrings("} ", result.whitespaces[2][1].src(src));
-
     try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
 
@@ -130,33 +83,25 @@ test "comments" {
     ;
     const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer result.deinit(talloc);
-    try testing.expectEqual(6, result.values.len);
-    try testing.expectEqual(.list, std.meta.activeTag(result.values[0]));
-    try testing.expectEqual(.symbol, std.meta.activeTag(result.values[1]));
-    try testing.expectEqual(.symbol, std.meta.activeTag(result.values[2]));
-    try testing.expectEqual(.vector, std.meta.activeTag(result.values[3]));
-    try testing.expectEqual(.symbol, std.meta.activeTag(result.values[4]));
-    try testing.expectEqual(.symbol, std.meta.activeTag(result.values[5]));
-
     try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
 
-fn testParse(alloc: std.mem.Allocator, src: []const u8) !void {
+fn testParse(alloc: std.mem.Allocator, src: [:0]const u8) !void {
     const result = try edn.parseFromSliceAlloc(alloc, src, .{}, .{});
     defer result.deinit(alloc);
-    const result2 = try edn.parseFromSliceAlloc(alloc, src, .{ .flags = .{ .whitespace = .exclude } }, .{});
+    const result2 = try edn.parseFromSliceAlloc(alloc, src, .{ .whitespace = .exclude }, .{});
     defer result2.deinit(alloc);
 }
 
 test "allocation failures" {
     const f = try std.fs.cwd().openFile("examples/edn.edn", .{});
     defer f.close();
-    const src = try f.readToEndAlloc(talloc, 100000);
+    const src = try f.readToEndAllocOptions(talloc, 100000, null, 8, 0);
     defer talloc.free(src);
     try testing.checkAllAllocationFailures(talloc, testParse, .{src});
 }
 
-fn testEql(asrc: []const u8, bsrc: []const u8, alen: u8, blen: u8) !void {
+fn testEql(asrc: [:0]const u8, bsrc: [:0]const u8, alen: u8, blen: u8) !void {
     const ares = try edn.parseFromSliceAlloc(talloc, asrc, .{}, .{});
     defer ares.deinit(talloc);
     const bres = try edn.parseFromSliceAlloc(talloc, bsrc, .{}, .{});
@@ -165,6 +110,7 @@ fn testEql(asrc: []const u8, bsrc: []const u8, alen: u8, blen: u8) !void {
     try testing.expectEqual(blen, bres.values.len);
     try testing.expectEqual(1, ares.top_level_values);
     try testing.expectEqual(1, bres.top_level_values);
+
     var actx = edn.MapContext{ .src = asrc, .values = ares.values };
     var bctx = edn.MapContext{ .src = bsrc, .values = bres.values };
     if (actx.hash(ares.values[0]) != bctx.hash(bres.values[0])) {
@@ -176,7 +122,7 @@ fn testEql(asrc: []const u8, bsrc: []const u8, alen: u8, blen: u8) !void {
     try testing.expectFmt(bsrc, "{}", .{edn.fmtParseResult(bres, bsrc)});
 }
 
-fn testNotEql(asrc: []const u8, bsrc: []const u8, alen: u8, blen: u8) !void {
+fn testNotEql(asrc: [:0]const u8, bsrc: [:0]const u8, alen: u8, blen: u8) !void {
     testEql(asrc, bsrc, alen, blen) catch |e| switch (e) {
         error.TestUnexpectedResult,
         error.TestExpectedEqual,
@@ -186,12 +132,12 @@ fn testNotEql(asrc: []const u8, bsrc: []const u8, alen: u8, blen: u8) !void {
 }
 
 inline fn concatStrs(
-    comptime prefix: []const u8,
+    comptime prefix: [:0]const u8,
     comptime scalars: []const struct { []const u8, u8 },
-    comptime suffix: []const u8,
-) struct { []const u8, u8 } {
+    comptime suffix: [:0]const u8,
+) struct { [:0]const u8, u8 } {
     comptime {
-        var res: []const u8 = prefix;
+        var res: [:0]const u8 = prefix;
         var len: u8 = 1;
         for (scalars, 0..) |s, i| {
             res = res ++ (if (i == 0) "" else " ") ++ s[0];
@@ -202,7 +148,7 @@ inline fn concatStrs(
     }
 }
 
-const test_scalars = [_]struct { []const u8, u8 }{
+const test_scalars = [_]struct { [:0]const u8, u8 }{
     .{ "nil", 1 },
     .{ "true", 1 },
     .{ "false", 1 },
@@ -215,7 +161,7 @@ const test_scalars = [_]struct { []const u8, u8 }{
     .{ "(:a 1 \"foo\")", 4 },
 };
 
-const test_srcs = test_scalars ++ [_]struct { []const u8, u8 }{
+const test_srcs = test_scalars ++ [_]struct { [:0]const u8, u8 }{
     concatStrs("(", &test_scalars, ")"),
     concatStrs("[", &test_scalars, "]"),
     concatStrs("{", &test_scalars, "}"),
@@ -244,22 +190,30 @@ test "eqluality" {
 }
 
 test "measure" {
-    const measured = try edn.measure("(a, b, c)", .{}, .{});
-    try testing.expectEqual(4, measured.values);
-    try testing.expectEqual(4, measured.whitespaces);
+    {
+        const measured = try edn.measure("(a, b, c)", .{}, .{});
+        try testing.expectEqual(4, measured.values);
+        try testing.expectEqual(1, measured.top_level_values);
+    }
+    {
+        const measured = try edn.measure("( [a] {:a a} )", .{}, .{});
+        try testing.expectEqual(6, measured.values);
+        try testing.expectEqual(1, measured.top_level_values);
+    }
 }
 
 test "exclude whitespace" {
-    // TODO - more coverage
-    const res = try edn.parseFromSliceAlloc(talloc, "a b c", .{ .flags = .{ .whitespace = .exclude } }, .{});
+    const src = "a (a b c [] {:a :b, :c :d})";
+    const res = try edn.parseFromSliceAlloc(talloc, src, .{ .whitespace = .exclude }, .{});
     defer res.deinit(talloc);
+    try testing.expectFmt(src, "{}", .{edn.fmtParseResult(res, src)});
 }
 
 test "ParseResult find()" {
     const src =
         \\(a b c {:a 1 :b 2 "foo" 3 ns/sym 4 5 5 \c 6})
     ;
-    const res = try edn.parseFromSliceAlloc(talloc, src, .{ .flags = .{ .whitespace = .exclude } }, .{});
+    const res = try edn.parseFromSliceAlloc(talloc, src, .{ .whitespace = .exclude }, .{});
     defer res.deinit(talloc);
     try testing.expectError(error.PathNotFound, res.find("1", src));
     try testing.expectError(error.PathNotFound, res.find("0//3//missing", src));
@@ -402,8 +356,8 @@ test "tagged handler" {
     });
     defer res.deinit(talloc);
     try testing.expectEqual(2, res.values[0].map.keys.len);
-    try testing.expectEqual(.integer, std.meta.activeTag(res.values[0].map.values[1]));
-    try testing.expectEqual(0, res.values[0].map.values[1].integer);
+    try testing.expectEqual(.tagged, std.meta.activeTag(res.values[0].map.values[1]));
+    try testing.expectEqual(.integer, std.meta.activeTag(res.values[0].map.values[1].tagged[1].*));
     try testing.expectEqual(10, userdata1);
 
     const DateTime = struct { int: i128 };
@@ -480,20 +434,20 @@ fn expectOne(ex: Expectation, actual: edn.Value, src: []const u8) !void {
         .integer,
         => |int, tag| try testing.expectEqual(@field(ex, @tagName(tag)), int),
         .vector => |v| {
-            try testing.expectEqual(ex.vector.len, v.len);
-            for (ex.vector, v) |e, a| {
+            try testing.expectEqual(ex.vector.len, v.values.len);
+            for (ex.vector, v.values) |e, a| {
                 try expectOne(e, a, src);
             }
         },
         .list => |v| {
-            try testing.expectEqual(ex.list.len, v.len);
-            for (ex.list, v) |e, a| {
+            try testing.expectEqual(ex.list.len, v.values.len);
+            for (ex.list, v.values) |e, a| {
                 try expectOne(e, a, src);
             }
         },
-        .set => |v| {
-            try testing.expectEqual(ex.set.len, v.len);
-            for (ex.set, v) |e, a| {
+        .set => |set| {
+            try testing.expectEqual(ex.set.len, set.values.len);
+            for (ex.set, set.values) |e, a| {
                 try expectOne(e, a, src);
             }
         },
@@ -505,16 +459,19 @@ fn expectOne(ex: Expectation, actual: edn.Value, src: []const u8) !void {
                 try expectOne(e[1], v.values[i], src);
             }
         },
+        .tagged => std.debug.panic("TODO {s}", .{@tagName(actual)}),
     }
 }
 
-fn expect(src: []const u8, expected: []const Expectation) !void {
-    const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
+fn expect(src: [:0]const u8, expected: []const Expectation) !void {
+    var res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer res.deinit(talloc);
-    // std.debug.print("{any}\n", .{res.values[0..res.top_level_values]});
+    // std.debug.print("expected {any}\n", .{expected});
+    // std.debug.print("got      {any}\n", .{res.values[0..res.top_level_values]});
     try testing.expectEqual(expected.len, res.top_level_values);
-    for (expected, res.values[0..res.top_level_values]) |ex, actual| {
-        try expectOne(ex, actual, src);
+
+    for (expected, 0..) |ex, i| {
+        try expectOne(ex, res.values[i], src);
     }
 }
 
@@ -584,45 +541,32 @@ test "string parsing" {
         \\"hi" "hi"
     , &.{ str_hi, str_hi });
 
-    try testing.expectError(error.InvalidString, expect(
-        \\"
-    , &.{}));
-    try testing.expectError(error.InvalidEscape, expect(
-        \\"\
-    , &.{}));
-    try testing.expectError(error.InvalidString, expect(
-        \\"\\
-    , &.{}));
+    try testing.expectError(error.InvalidToken, expect("\"", &.{}));
+    try testing.expectError(error.InvalidToken, expect("\"\\", &.{}));
+    try testing.expectError(error.InvalidToken, expect("\"\\\\", &.{}));
     try testing.expectError(error.MissingWhitespaceBetweenValues, expect(
-        \\"\\""
+        \\"\\"""
     , &.{}));
 }
 
 test "char parsing" {
     try expect(
-        \\\a
-    , &.{.{ .character = 'a' }});
+        \\\a \u \u0 \u1F590
+    , &.{
+        .{ .character = 'a' },
+        .{ .character = 'u' },
+        .{ .character = 0 },
+        .{ .character = '🖐' },
+    });
     try expect(
-        \\\u
-    , &.{.{ .character = 'u' }});
-    try expect(
-        \\\space
-    , &.{.{ .character = ' ' }});
-    try expect(
-        \\\newline
-    , &.{.{ .character = '\n' }});
-    try expect(
-        \\\return
-    , &.{.{ .character = '\r' }});
-    try expect(
-        \\\tab
-    , &.{.{ .character = '\t' }});
-    try expect(
-        \\\\
-    , &.{.{ .character = '\\' }});
-    try expect(
-        \\\u1F590
-    , &.{.{ .character = '🖐' }});
+        \\\space \newline \return \tab \\
+    , &.{
+        .{ .character = ' ' },
+        .{ .character = '\n' },
+        .{ .character = '\r' },
+        .{ .character = '\t' },
+        .{ .character = '\\' },
+    });
     try expect(
         \\\u "hi"
     , &.{ .{ .character = 'u' }, str_hi });
@@ -630,8 +574,11 @@ test "char parsing" {
         \\\u1F590 "hi"
     , &.{ .{ .character = '🖐' }, str_hi });
 
-    try testing.expectError(error.InvalidChar, expect(
+    try testing.expectError(error.InvalidToken, expect(
         \\\
+    , &.{}));
+    try testing.expectError(error.InvalidToken, expect(
+        \\\\0
     , &.{}));
 }
 
@@ -665,22 +612,22 @@ test "symbol parsing" {
     try expect("a#", &.{.{ .symbol = "a#" }});
     try expect("a:b", &.{.{ .symbol = "a:b" }});
     try expect("a:", &.{.{ .symbol = "a:" }});
-    try expect("/", &.{.{ .symbol = "/" }});
+    try testing.expectError(error.InvalidToken, expect("/", &.{.{ .symbol = "/" }}));
     try expect("a/a#", &.{.{ .symbol = "a/a#" }});
     try expect("a/a:", &.{.{ .symbol = "a/a:" }});
 
-    try testing.expectError(error.InvalidSymbol, expect("a/b/c", &.{}));
-    try testing.expectError(error.InvalidSymbol, expect("a/", &.{}));
-    try testing.expectError(error.InvalidSymbol, expect("/a", &.{}));
-    try testing.expectError(error.InvalidSymbol, expect("a/#a", &.{}));
-    try testing.expectError(error.InvalidSymbol, expect("a/:a", &.{}));
+    try testing.expectError(error.InvalidToken, expect("a/b/c", &.{}));
+    try testing.expectError(error.InvalidToken, expect("a/", &.{}));
+    try testing.expectError(error.InvalidToken, expect("/a", &.{}));
+    try testing.expectError(error.InvalidToken, expect("a/#a", &.{}));
+    try testing.expectError(error.InvalidToken, expect("a/:a", &.{}));
     try testing.expectError(error.MissingWhitespaceBetweenValues, expect("-0a", &.{}));
     try testing.expectError(error.MissingWhitespaceBetweenValues, expect("+0a", &.{}));
-    try testing.expectError(error.InvalidSymbol, expect(".0a", &.{}));
-    try testing.expectError(error.InvalidSymbol, expect("##a", &.{}));
-    try testing.expectError(error.InvalidSymbol, expect("#:a", &.{}));
-    try testing.expectError(error.InvalidSymbol, expect("::a", &.{}));
-    try testing.expectError(error.InvalidSymbol, expect(":#a", &.{}));
+    try testing.expectError(error.MissingWhitespaceBetweenValues, expect(".0a", &.{}));
+    try testing.expectError(error.InvalidToken, expect("##a", &.{}));
+    try testing.expectError(error.InvalidToken, expect("#:a", &.{}));
+    try testing.expectError(error.InvalidToken, expect("::a", &.{}));
+    try testing.expectError(error.InvalidToken, expect(":#a", &.{}));
 }
 
 test "keyword parsing" {
@@ -820,7 +767,7 @@ test "discard parsing" {
 }
 
 test "no intermediate whitespace" {
-    const srcs_no_ws = [_][]const u8{
+    const srcs_no_ws = [_][:0]const u8{
         "a\"a\"",
         "\"a\"a",
         "1a",
@@ -885,20 +832,14 @@ test "ednParse()" {
             const data: *u8 = @ptrCast(userdata orelse unreachable);
             data.* = 10;
 
-            p.skipWsAndComments();
-            if (p.peek(0) != '{') return error.Parse;
-            p.index += 1;
-            p.skipWsAndComments();
+            if (p.tokenizer.next().tag != .lbrace) return error.Parse;
 
             const key = try edn.userParseValue(p);
             if (key != .keyword) return error.Parse;
-            p.skipWsAndComments();
 
             const value = try edn.userParseValue(p);
             if (value != .integer) return error.Parse;
-            p.skipWsAndComments();
-            if (p.peek(0) != '}') return error.Parse;
-            p.index += 1;
+            if (p.tokenizer.next().tag != .rbrace) return error.Parse;
 
             return .{ .a = @intCast(value.integer) };
         }
@@ -906,4 +847,30 @@ test "ednParse()" {
     const src = "{:a 10}";
     const t = try edn.parseTypeFromSlice(T, src, .{ .userdata = &userdata1 });
     try testing.expectEqual(10, t.a);
+}
+
+test "Tokenizer.edn" {
+    const f = try std.fs.cwd().openFile("examples/Tokenizer.edn", .{});
+    defer f.close();
+    const src = try f.readToEndAllocOptions(talloc, 100000, null, 8, 0);
+    defer talloc.free(src);
+    try testing.checkAllAllocationFailures(talloc, testParse, .{src});
+
+    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
+    defer result.deinit(talloc);
+
+    try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+}
+
+test "unclosed containers" {
+    if (true) return error.SkipZigTest; // TODO
+    try testParse(talloc, "( {}");
+}
+
+test "readme" {
+    // const edn = @import("extensible-data-notation");
+    const src = "a (a b c [1 2 3] {:a 1, :b 2})";
+    const result = try edn.parseFromSliceAlloc(std.testing.allocator, src, .{}, .{});
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
