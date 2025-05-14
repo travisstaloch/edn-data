@@ -22,10 +22,10 @@ pub const Token = struct {
         end: u32,
 
         pub const zero: Loc = .{ .start = 0, .end = 0 };
-        pub fn src(loc: Loc, s: []const u8) []const u8 {
+        pub fn src(loc: Loc, s: [:0]const u8) []const u8 {
             return s[loc.start..loc.end];
         }
-        pub fn ws(loc: Loc, s: []const u8) []const u8 {
+        pub fn ws(loc: Loc, s: [:0]const u8) []const u8 {
             return s[loc.ws_start..loc.start];
         }
     };
@@ -64,12 +64,13 @@ pub const Token = struct {
         }
     };
 
-    pub fn src(t: Token, s: []const u8) []const u8 {
+    pub fn src(t: Token, s: [:0]const u8) []const u8 {
         return t.loc.src(s);
     }
 };
 
-pub fn init(src: [:0]const u8) Tokenizer {
+pub fn init(src: [:0]const u8) !Tokenizer {
+    if (!std.unicode.utf8ValidateSlice(src)) return error.InvalidUTF8;
     var self: Tokenizer = .{ .src = src };
     for (0..lookbehind_len) |_| self.lookbehind.push(self.nextInner()) catch unreachable;
     return self;
@@ -88,12 +89,19 @@ fn tagInc(self: *Tokenizer, tag: Token.Tag, inc: u32, result: *Token) void {
     result.tag = tag;
 }
 
+fn srcAt(self: *Tokenizer, index: u32) u8 {
+    const i = self.index + index;
+    return if (i <= self.src.len) self.src[i] else 0;
+}
+
 fn nextInner(self: *Tokenizer) Token {
-    var result: Token = .{ .tag = undefined, .loc = .{
-        .ws_start = self.index,
-        .start = self.index,
-        .end = undefined,
+    const start = @min(self.src.len, self.index);
+    var result: Token = .{ .tag = .invalid, .loc = .{
+        .ws_start = start,
+        .start = start,
+        .end = start,
     } };
+
     const State = enum(u8) {
         start = 0,
         invalid = 1,
@@ -118,14 +126,14 @@ fn nextInner(self: *Tokenizer) Token {
 
     state: switch (State.start) {
         // consume until next whitespace
-        .invalid => switch (self.src[self.index]) {
+        .invalid => switch (self.srcAt(0)) {
             0, ' ', '\t', '\r', '\n', ',' => {},
             else => {
                 self.index += 1;
                 continue :state .invalid;
             },
         },
-        .start => switch (self.src[self.index]) {
+        .start => switch (self.srcAt(0)) {
             0 => self.tagInc(.eof, 0, &result),
             ' ', '\t', '\r', '\n', ',' => {
                 self.index += 1;
@@ -137,12 +145,12 @@ fn nextInner(self: *Tokenizer) Token {
             ']' => self.tagInc(.rbracket, 1, &result),
             '{' => self.tagInc(.lbrace, 1, &result),
             '}' => self.tagInc(.rbrace, 1, &result),
-            '#' => switch (self.src[self.index + 1]) {
+            '#' => switch (self.srcAt(1)) {
                 0, ' ', '\t', '\r', '\n', ',' => {
                     result.tag = .invalid;
                 },
                 '#', ':' => {
-                    self.tagInc(.invalid, 2, &result);
+                    self.tagInc(.invalid, 1, &result);
                     continue :state .invalid;
                 },
                 '{' => {
@@ -166,14 +174,14 @@ fn nextInner(self: *Tokenizer) Token {
             },
             '\\' => {
                 self.tagInc(.char, 1, &result);
-                if (self.src[self.index] == 'u') {
+                if (self.srcAt(0) == 'u') {
                     self.index += 1;
                     continue :state .char_u;
                 } else continue :state .char;
             },
-            ':' => switch (self.src[self.index + 1]) {
+            ':' => switch (self.srcAt(1)) {
                 ':', '/', '#' => {
-                    self.tagInc(.invalid, 2, &result);
+                    self.tagInc(.invalid, 1, &result);
                     continue :state .invalid;
                 },
                 else => {
@@ -181,7 +189,7 @@ fn nextInner(self: *Tokenizer) Token {
                     continue :state .keyword;
                 },
             },
-            '0' => switch (self.src[self.index + 1]) {
+            '0' => switch (self.srcAt(1)) {
                 '0'...'9' => {
                     self.tagInc(.invalid, 1, &result);
                     continue :state .invalid;
@@ -205,7 +213,7 @@ fn nextInner(self: *Tokenizer) Token {
                 self.tagInc(.int, 1, &result);
                 continue :state .number;
             },
-            '-', '+' => switch (self.src[self.index + 1]) {
+            '-', '+' => switch (self.srcAt(1)) {
                 // number if followed by a digit
                 '0'...'9' => {
                     self.tagInc(.int, 1, &result);
@@ -216,7 +224,7 @@ fn nextInner(self: *Tokenizer) Token {
                     continue :state .symbol;
                 },
             },
-            '.' => if (std.ascii.isDigit(self.src[self.index + 1])) {
+            '.' => if (std.ascii.isDigit(self.srcAt(1))) {
                 self.tagInc(.float, 1, &result);
                 continue :state .float;
             } else {
@@ -232,7 +240,7 @@ fn nextInner(self: *Tokenizer) Token {
                 continue :state .invalid;
             },
         },
-        .ws => switch (self.src[self.index]) {
+        .ws => switch (self.srcAt(0)) {
             ' ', '\t', '\r', '\n', ',' => {
                 self.index += 1;
                 continue :state .ws;
@@ -245,7 +253,7 @@ fn nextInner(self: *Tokenizer) Token {
                 continue :state .start;
             },
         },
-        .symbol => switch (self.src[self.index]) {
+        .symbol => switch (self.srcAt(0)) {
             'a'...'z', 'A'...'Z', '*', '!', '_', '?', '%', '&', '=', '<', '>', '+', '-', '.', '0'...'9', '#', ':' => {
                 self.index += 1;
                 continue :state .symbol;
@@ -256,7 +264,7 @@ fn nextInner(self: *Tokenizer) Token {
             },
             else => {},
         },
-        .symbol_slash => switch (self.src[self.index]) {
+        .symbol_slash => switch (self.srcAt(0)) {
             'a'...'z', 'A'...'Z', '*', '!', '_', '?', '%', '&', '=', '<', '>', '+', '-', '.', '0'...'9', '#', ':' => {
                 self.index += 1;
                 continue :state .symbol_slash;
@@ -268,7 +276,7 @@ fn nextInner(self: *Tokenizer) Token {
             },
             else => {},
         },
-        .str => switch (self.src[self.index]) {
+        .str => switch (self.srcAt(0)) {
             0 => self.tagInc(.invalid, 0, &result),
             '"' => self.index += 1,
             '\\' => {
@@ -280,7 +288,7 @@ fn nextInner(self: *Tokenizer) Token {
                 continue :state .str;
             },
         },
-        .str_escape => switch (self.src[self.index]) {
+        .str_escape => switch (self.srcAt(0)) {
             '"', 'n', 't', 'r', '\\' => {
                 self.index += 1;
                 continue :state .str;
@@ -288,25 +296,31 @@ fn nextInner(self: *Tokenizer) Token {
             else => self.tagInc(.invalid, 0, &result),
         },
         // only accept 1 char or "tab", "space", "return", or "newline"
-        .char => if (std.mem.startsWith(u8, self.src[self.index..], "space")) {
-            self.index += 5;
-        } else if (std.mem.startsWith(u8, self.src[self.index..], "newline")) {
-            self.index += 7;
-        } else if (std.mem.startsWith(u8, self.src[self.index..], "tab")) {
-            self.index += 3;
-        } else if (std.mem.startsWith(u8, self.src[self.index..], "return")) {
-            self.index += 6;
-        } else switch (self.src[self.index]) {
-            0, ' ', '\n', '\t', '\r' => result.tag = .invalid,
-            else => switch (self.src[self.index + 1]) {
-                0, ' ', '\n', '\t', '\r', ')', ']', '}', ',' => self.index += 1,
-                else => {
-                    result.tag = .invalid;
-                    continue :state .invalid;
+        .char => if (self.index < self.src.len) {
+            const slice = self.src[self.index..];
+            if (std.mem.startsWith(u8, slice, "space")) {
+                self.index += 5;
+            } else if (std.mem.startsWith(u8, slice, "newline")) {
+                self.index += 7;
+            } else if (std.mem.startsWith(u8, slice, "tab")) {
+                self.index += 3;
+            } else if (std.mem.startsWith(u8, slice, "return")) {
+                self.index += 6;
+            } else switch (self.srcAt(0)) {
+                0, ' ', '\n', '\t', '\r' => result.tag = .invalid,
+                else => switch (self.srcAt(1)) {
+                    0, ' ', '\n', '\t', '\r', ')', ']', '}', ',' => self.index += 1,
+                    else => {
+                        result.tag = .invalid;
+                        continue :state .invalid;
+                    },
                 },
-            },
+            }
+        } else {
+            result.tag = .invalid;
+            continue :state .invalid;
         },
-        .char_u => switch (self.src[self.index]) {
+        .char_u => switch (self.srcAt(0)) {
             0, ' ', '\n', '\t', '\r', ',', ')', ']', '}' => {},
             '0'...'9', 'A'...'F', 'a'...'f' => {
                 self.index += 1;
@@ -318,7 +332,7 @@ fn nextInner(self: *Tokenizer) Token {
             },
         },
         // TODO An integer can have the suffix N to indicate that arbitrary precision is desired.
-        .number => switch (self.src[self.index]) {
+        .number => switch (self.srcAt(0)) {
             '0'...'9' => {
                 self.index += 1;
                 continue :state .number;
@@ -336,7 +350,7 @@ fn nextInner(self: *Tokenizer) Token {
             else => {},
         },
         // TODO a floating-point number may have the suffix M to indicate that exact precision is desired.
-        .number_dot => switch (self.src[self.index]) {
+        .number_dot => switch (self.srcAt(0)) {
             '.' => {
                 result.tag = .invalid;
                 self.index += 1;
@@ -352,7 +366,7 @@ fn nextInner(self: *Tokenizer) Token {
             },
             else => {},
         },
-        .float => switch (self.src[self.index]) {
+        .float => switch (self.srcAt(0)) {
             '0'...'9' => {
                 self.index += 1;
                 continue :state .float;
@@ -363,7 +377,7 @@ fn nextInner(self: *Tokenizer) Token {
             },
             else => {},
         },
-        .float_e => switch (self.src[self.index]) {
+        .float_e => switch (self.srcAt(0)) {
             '-', '+' => {
                 self.index += 1;
                 continue :state .float_e_sign;
@@ -377,7 +391,7 @@ fn nextInner(self: *Tokenizer) Token {
                 continue :state .invalid;
             },
         },
-        .float_e_sign => switch (self.src[self.index]) {
+        .float_e_sign => switch (self.srcAt(0)) {
             '0'...'9' => {
                 self.index += 1;
                 continue :state .float_e_digit;
@@ -387,7 +401,7 @@ fn nextInner(self: *Tokenizer) Token {
                 continue :state .invalid;
             },
         },
-        .float_e_digit => switch (self.src[self.index]) {
+        .float_e_digit => switch (self.srcAt(0)) {
             '0'...'9' => {
                 self.index += 1;
                 continue :state .float_e_digit;
@@ -399,7 +413,7 @@ fn nextInner(self: *Tokenizer) Token {
             },
         },
         // comments may include ws and comments on the next line
-        .comment => switch (self.src[self.index]) {
+        .comment => switch (self.srcAt(0)) {
             0 => continue :state .start,
             '\n' => {
                 self.index += 1;
@@ -410,7 +424,7 @@ fn nextInner(self: *Tokenizer) Token {
                 continue :state .comment;
             },
         },
-        .comment_newline => switch (self.src[self.index]) {
+        .comment_newline => switch (self.srcAt(0)) {
             else => continue :state .start,
             ';' => {
                 self.index += 1;
@@ -421,7 +435,7 @@ fn nextInner(self: *Tokenizer) Token {
                 continue :state .comment_newline;
             },
         },
-        .keyword => switch (self.src[self.index]) {
+        .keyword => switch (self.srcAt(0)) {
             'a'...'z', 'A'...'Z', '0'...'9', '*', '+', '!', '-', '_', '?', '%', '&', '=', '<', '>', '.', ':', '#' => {
                 self.index += 1;
                 continue :state .keyword;
@@ -432,7 +446,7 @@ fn nextInner(self: *Tokenizer) Token {
             },
             else => {},
         },
-        .keyword_slash => switch (self.src[self.index]) {
+        .keyword_slash => switch (self.srcAt(0)) {
             'a'...'z', 'A'...'Z', '0'...'9', '*', '+', '!', '-', '_', '?', '%', '&', '=', '<', '>', '.', ':', '#' => {
                 self.index += 1;
                 continue :state .keyword_slash;
@@ -469,7 +483,8 @@ fn nextInner(self: *Tokenizer) Token {
         }
     }
 
-    result.loc.end = self.index;
+    result.loc.end = @min(self.index, self.src.len);
+    result.loc.start = @min(result.loc.start, self.src.len);
     return result;
 }
 
@@ -483,7 +498,7 @@ pub fn isTag(self: *const Tokenizer, tag: Token.Tag) bool {
 }
 
 fn expectTokens(src: [:0]const u8, expecteds: []const Token.Tag) !void {
-    var t = Tokenizer.init(src);
+    var t = try Tokenizer.init(src);
     for (expecteds, 0..) |expected_tag, i| {
         const token = t.next();
         // std.debug.print("expected {s}. found {s} '{s}'. text offset {}. tag offset {}\n", .{ @tagName(expected_tag), @tagName(token.tag), token.src(src), t.index, i });
@@ -1079,7 +1094,7 @@ fn testLoc(
     inline for (srcs) |s| src = src ++ s;
     try testing.expectEqualStrings(expected_src, src);
 
-    var t = Tokenizer.init(src);
+    var t = try Tokenizer.init(src);
     var i: usize = 0;
     while (true) : (i += 1) {
         const token = t.next();

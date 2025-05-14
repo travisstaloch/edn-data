@@ -51,7 +51,7 @@ pub const Value = union(Value.Tag) {
     character: u21,
     keyword: Token,
     symbol: Token,
-    tagged: struct { Token, *Value }, // TODO remove Token. don't think its used for formatting or anything.
+    tagged: struct { tag: Token, value: *Value },
     integer: i128,
     float: Token,
     list: ValueList,
@@ -109,7 +109,9 @@ pub const Value = union(Value.Tag) {
                     const bhash = bctx.hash(b);
                     break :blk ahash == bhash;
                 },
-                .tagged => std.debug.panic("TODO {s}", .{@tagName(a)}),
+                .tagged => |tagged| mem.eql(u8, tagged.tag.src(a_src), b.tagged.tag.src(b_src)) and
+                    tagged.value.eql(a_src, a_values, b.tagged.value.*, b_src, b_values),
+                // else => std.debug.panic("TODO {s}", .{@tagName(a)}),
             };
     }
 };
@@ -144,7 +146,11 @@ pub const MapContext = struct {
                 hptr.update(mem.asBytes(&set.values.len));
                 for (set.values) |k| self.hashValue(k, hptr);
             },
-            .tagged => std.debug.panic("TODO {s}", .{@tagName(v)}),
+            .tagged => |tagged| {
+                hptr.update(tagged.tag.src(self.src));
+                self.hashValue(tagged.value.*, hptr);
+            },
+            // else => std.debug.panic("TODO {s}", .{@tagName(v)}),
         }
     }
 
@@ -278,7 +284,7 @@ pub fn measure(
     options: Options,
     comptime comptime_options: ComptimeOptions,
 ) !Measured {
-    var p = Parser.init(src, options, undefined, undefined, undefined, undefined, comptime_options.handlers);
+    var p = try Parser.init(src, options, undefined, undefined, undefined, undefined, comptime_options.handlers);
     _ = try parseValues(&p, .measure);
     return p.measured;
 }
@@ -293,7 +299,7 @@ pub fn parseFromSliceBuf(
     measured: Measured,
     comptime comptime_options: ComptimeOptions,
 ) !ParseResult {
-    var p = Parser.init(
+    var p = try Parser.init(
         src,
         options,
         values.ptr,
@@ -308,7 +314,7 @@ pub fn parseFromSliceBuf(
     debug("measured.values {} parsed values count {}", .{ p.measured.values, p.values - p.values_start });
 
     // TODO verify that all containers are closed.  currently we can trip this assertion with
-    assert(p.values == p.values_start + measured.values);
+    if (p.values != p.values_start + measured.values) return error.UnclosedContainer;
     assert(p.values_start == values.ptr);
     if (p.options.whitespace == .include) assert(p.wss == p.wss_start + measured.values);
     assert(p.wss_start == wss.ptr);
@@ -366,7 +372,7 @@ pub inline fn parseFromSliceComptime(
 }
 
 pub fn parseTypeFromSlice(comptime T: type, src: [:0]const u8, options: Options) !T {
-    var p = Parser.init(src, options, undefined, undefined, undefined, undefined, &.{});
+    var p = try Parser.init(src, options, undefined, undefined, undefined, undefined, &.{});
     const t = try parseType(T, null, &p);
     if (!p.tokenizer.isTag(.eof)) return error.InvalidType;
     return t;
@@ -608,8 +614,9 @@ fn formatValue(
 ) !void {
     const v = data.value;
 
+    const have_ws = data.parse_result.wss.len > 0;
     // print leading whitespace
-    if (data.parse_result.wss.len > 0) {
+    if (have_ws) {
         const ws = data.parse_result.wss[data.value_id];
         try writer.writeAll(data.src[ws[0]..ws[1]]);
     } else if (data.parent == null) { // skip if inside list, vec, map or set. those are handled in loops below
@@ -640,15 +647,20 @@ fn formatValue(
                 try writer.print("\\{u}", .{c}),
         },
         .integer => |x| try std.fmt.formatType(x, fmt, options, writer, 0),
-        .tagged => |tag| {
-            try writer.writeAll(tag[0].src(data.src));
-            const value_id: u32 = @intCast(tag[1] - data.parse_result.values.ptr);
-            try std.fmt.formatType(fmtValue(tag[1].*, value_id, data.src, data.parse_result, data.parent), fmt, options, writer, 0);
+        .tagged => |tagged| {
+            const src = tagged.tag.src(data.src);
+            try writer.writeAll(src);
+            // FIXME - this hack allows '#foo 1' to print correctly instead of '#foo  1' when .whitespace = .exclude.
+            if (!have_ws and (src.len == 0 or !std.ascii.isWhitespace(src[src.len - 1]))) {
+                try writer.writeByte(' ');
+            }
+            const value_id: u32 = @intCast(tagged.value - data.parse_result.values.ptr);
+            try std.fmt.formatType(fmtValue(tagged.value.*, value_id, data.src, data.parse_result, data.parent), fmt, options, writer, 0);
         },
         .list => |l| {
             try writer.writeAll(data.src[l.leading_ws[0]..l.leading_ws[1]]);
             for (l.values, 0..) |*item, i| {
-                if (data.parse_result.wss.len == 0 and i > 0) try writer.writeByte(' ');
+                if (!have_ws and i > 0) try writer.writeByte(' ');
                 const value_id: u32 = @intCast(item - data.parse_result.values.ptr);
                 try std.fmt.formatType(fmtValue(item.*, value_id, data.src, data.parse_result, v), fmt, options, writer, 0);
             }
@@ -657,7 +669,7 @@ fn formatValue(
         .vector => |l| {
             try writer.writeAll(data.src[l.leading_ws[0]..l.leading_ws[1]]);
             for (l.values, 0..) |*item, i| {
-                if (data.parse_result.wss.len == 0 and i > 0) try writer.writeByte(' ');
+                if (!have_ws and i > 0) try writer.writeByte(' ');
                 const value_id: u32 = @intCast(item - data.parse_result.values.ptr);
                 try std.fmt.formatType(fmtValue(item.*, value_id, data.src, data.parse_result, v), fmt, options, writer, 0);
             }
@@ -666,10 +678,10 @@ fn formatValue(
         .map => |m| {
             try writer.writeAll(data.src[m.leading_ws[0]..m.leading_ws[1]]);
             for (m.keys, m.values, 0..) |*k, *sv, i| {
-                if (data.parse_result.wss.len == 0 and i > 0) try writer.writeAll(", ");
+                if (!have_ws and i > 0) try writer.writeAll(" ");
                 const kvalue_id: u32 = @intCast(k - data.parse_result.values.ptr);
                 try std.fmt.formatType(fmtValue(k.*, kvalue_id, data.src, data.parse_result, v), fmt, options, writer, 0);
-                if (data.parse_result.wss.len == 0) try writer.writeByte(' ');
+                if (!have_ws) try writer.writeByte(' ');
                 const vvalue_id: u32 = @intCast(sv - data.parse_result.values.ptr);
                 try std.fmt.formatType(fmtValue(sv.*, vvalue_id, data.src, data.parse_result, v), fmt, options, writer, 0);
             }
@@ -678,7 +690,7 @@ fn formatValue(
         .set => |set| {
             try writer.writeAll(data.src[set.leading_ws[0]..set.leading_ws[1]]);
             for (set.values, 0..) |*k, i| {
-                if (data.parse_result.wss.len == 0 and i > 0) try writer.writeByte(' ');
+                if (!have_ws and i > 0) try writer.writeByte(' ');
                 const value_id: u32 = @intCast(k - data.parse_result.values.ptr);
                 try std.fmt.formatType(fmtValue(k.*, value_id, data.src, data.parse_result, v), fmt, options, writer, 0);
             }
@@ -746,7 +758,11 @@ fn parseChar(p: *Parser, t: Token) !Value {
     const src0 = t.loc.src(p.tokenizer.src);
     assert(src0[0] == '\\');
     const src = src0[1..];
-    const char: u21 = if (src.len == 1) src[0] else switch (src[0]) {
+    const char: u21 = if (src.len == 0)
+        return error.InvalidChar
+    else if (src.len == 1)
+        src[0]
+    else switch (src[0]) {
         'u' => try std.fmt.parseInt(u21, src[1..], 16),
         'n' => if (std.mem.eql(u8, "newline", src)) '\n' else return error.InvalidChar,
         'r' => if (std.mem.eql(u8, "return", src)) '\r' else return error.InvalidChar,
@@ -843,7 +859,7 @@ fn parseOrMeasureMap(p: *Parser, prefix: Token, comptime mode: ParseMode) !Value
         .values = vs[len..],
         .value_wss = wss[len..],
         .leading_ws = .{ prefix.loc.start, prefix.loc.end },
-        .trailing_ws = undefined,
+        .trailing_ws = .{ 0, 0 },
     };
     p.values = p.values[len * 2 ..];
     p.wss = p.wss[len * 2 ..];
@@ -870,13 +886,20 @@ fn parseMap(p: *Parser, prefix: Token, comptime mode: ParseMode, result: *ValueM
 
         if (mode == .allocate) {
             parseValue(p, c, mode, result.keys[i..].ptr, result.key_wss[i..].ptr) catch |e| switch (e) {
-                error.EndOfMap => break,
+                error.EndOfMap => {
+                    result.trailing_ws = .{ c.loc.ws_start, c.loc.end };
+                    p.last_token = c;
+                    break;
+                },
                 else => return e,
             };
             try parseValue(p, p.tokenizer.next(), mode, result.values[i..].ptr, result.value_wss[i..].ptr);
         } else {
             parseValue(p, c, mode, undefined, undefined) catch |e| switch (e) {
-                error.EndOfMap => break,
+                error.EndOfMap => {
+                    p.last_token = c;
+                    break;
+                },
                 else => return e,
             };
             try parseValue(p, p.tokenizer.next(), mode, undefined, undefined);
@@ -992,7 +1015,7 @@ fn parseTagged(p: *Parser, t: Token, comptime mode: ParseMode) ParseError!Value 
     if (mode == .measure) {
         p.measured.values += 2;
     } else {
-        p.values[0] = .{ .tagged = .{ t, &p.values[1] } };
+        p.values[0] = .{ .tagged = .{ .tag = t, .value = &p.values[1] } };
         p.values[1] = v;
         defer p.values = p.values[2..];
         if (p.options.whitespace == .include) {
@@ -1040,8 +1063,7 @@ fn parseValueInner(p: *Parser, t: Token, comptime mode: ParseMode) !Value {
         .nil => .nil,
         .true => .true,
         .false => .false,
-        .rparen => unreachable,
-        .rbracket => unreachable,
+        .rparen, .rbracket => return err(p, "unexpected token '{s}'", .{@tagName(t.tag)}, error.InvalidToken),
     };
 }
 
@@ -1074,14 +1096,20 @@ fn parseValues(p: *Parser, comptime mode: ParseMode) ![2]u32 {
         }
         if (mode == .allocate) {
             parseValue(p, t, mode, top_level_vs.ptr, top_level_wss.ptr) catch |e| switch (e) {
-                error.Eof => break,
+                error.Eof => {
+                    final_ws = .{ t.loc.ws_start, t.loc.end };
+                    break;
+                },
                 else => return e,
             };
             top_level_vs = top_level_vs[1..];
             top_level_wss = top_level_wss[1..];
         } else {
             parseValue(p, t, mode, undefined, undefined) catch |e| switch (e) {
-                error.Eof => break,
+                error.Eof => {
+                    final_ws = .{ t.loc.ws_start, t.loc.end };
+                    break;
+                },
                 else => return e,
             };
             p.measured.top_level_values += 1;

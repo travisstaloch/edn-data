@@ -25,9 +25,9 @@ pub fn init(
     wss_start: [*][2]u32,
     wss: [*][2]u32,
     comptime handlers: []const edn.TaggedElementHandler.Data,
-) Parser {
+) !Parser {
     return .{
-        .tokenizer = .init(src),
+        .tokenizer = try .init(src),
         .depth = 0,
         .options = options,
         .values_start = values_start,

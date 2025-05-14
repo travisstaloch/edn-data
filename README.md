@@ -54,5 +54,8 @@ test "readme" {
   - [ ] this would require to re-think how parse results are ordered.
 - [ ] api to parse from reader
   - [ ] option for duping strings.  currently we don't dupe anything.
-- [ ] fix test "unclosed containers"
-- [ ] fuzz test the parser
+- [w] fix test "unclosed containers"
+  - [ ] add more "unclosed containers" test cases
+- [w] fuzz test the parser
+  - [x] parseFromSliceAlloc, fmtParseResult
+  - [ ] expand fuzzing: parseTypeFromSlice

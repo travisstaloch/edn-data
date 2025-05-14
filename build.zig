@@ -37,6 +37,7 @@ pub fn build(b: *std.Build) void {
         tests.root_module.addImport("extensible-data-notation", mod);
         tests.filters = filters;
         const run_tests = b.addRunArtifact(tests);
+        run_tests.has_side_effects = true;
         test_step.dependOn(&run_tests.step);
         b.installArtifact(tests);
     }

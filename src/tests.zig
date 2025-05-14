@@ -36,9 +36,7 @@ test "map" {
         \\
     ;
 
-    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
-    defer result.deinit(talloc);
-    try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+    try testParse(talloc, src);
 }
 
 test "fmt chars" {
@@ -47,10 +45,7 @@ test "fmt chars" {
         \\
     ;
 
-    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
-    defer result.deinit(talloc);
-
-    try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+    try testParse(talloc, src);
 }
 
 test "list" {
@@ -60,16 +55,11 @@ test "list" {
         \\  [name rating])
     ;
 
-    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
-    defer result.deinit(talloc);
-    try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+    try testParse(talloc, src);
 }
 
 test "nested list" {
-    const src = " ( [] {} ) ";
-    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
-    defer result.deinit(talloc);
-    try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+    try testParse(talloc, " ( [] {} ) ");
 }
 
 test "comments" {
@@ -81,16 +71,32 @@ test "comments" {
         \\
         \\; defrecord defined, among other things, map->MenuItem which will take a map
     ;
-    const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
-    defer result.deinit(talloc);
-    try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+
+    try testParse(talloc, src);
 }
 
 fn testParse(alloc: std.mem.Allocator, src: [:0]const u8) !void {
-    const result = try edn.parseFromSliceAlloc(alloc, src, .{}, .{});
+    try testParseOptions(alloc, src, .{});
+    try testParseOptions(alloc, src, .{ .whitespace = .exclude });
+}
+
+fn testParseOptions(alloc: std.mem.Allocator, src: [:0]const u8, options: edn.Options) !void {
+    const result = try edn.parseFromSliceAlloc(alloc, src, options, .{});
     defer result.deinit(alloc);
-    const result2 = try edn.parseFromSliceAlloc(alloc, src, .{ .whitespace = .exclude }, .{});
-    defer result2.deinit(alloc);
+    const src1 = try std.fmt.allocPrintZ(alloc, "{}", .{edn.fmtParseResult(result, src)});
+    defer alloc.free(src1);
+    if (options.whitespace == .include) {
+        try testing.expectEqualStrings(src, src1);
+    }
+    const result1 = edn.parseFromSliceAlloc(alloc, src1, options, .{}) catch |e| {
+        // std.debug.print("src1 '{s}'\n", .{src1});
+        return e;
+    };
+    defer result1.deinit(alloc);
+    const len = @min(result.values.len, result1.values.len);
+    for (result.values[0..len], result1.values[0..len]) |r, r1| {
+        try testing.expect(r.eql(src, result.values, r1, src1, result1.values));
+    }
 }
 
 test "allocation failures" {
@@ -98,6 +104,7 @@ test "allocation failures" {
     defer f.close();
     const src = try f.readToEndAllocOptions(talloc, 100000, null, .@"8", 0);
     defer talloc.free(src);
+    try testParse(talloc, src);
     try testing.checkAllAllocationFailures(talloc, testParse, .{src});
 }
 
@@ -203,7 +210,7 @@ test "measure" {
 }
 
 test "exclude whitespace" {
-    const src = "a (a b c [] {:a :b, :c :d})";
+    const src = "a (a b c [] {:a :b :c :d})";
     const res = try edn.parseFromSliceAlloc(talloc, src, .{ .whitespace = .exclude }, .{});
     defer res.deinit(talloc);
     try testing.expectFmt(src, "{}", .{edn.fmtParseResult(res, src)});
@@ -357,7 +364,7 @@ test "tagged handler" {
     defer res.deinit(talloc);
     try testing.expectEqual(2, res.values[0].map.keys.len);
     try testing.expectEqual(.tagged, std.meta.activeTag(res.values[0].map.values[1]));
-    try testing.expectEqual(.integer, std.meta.activeTag(res.values[0].map.values[1].tagged[1].*));
+    try testing.expectEqual(.integer, std.meta.activeTag(res.values[0].map.values[1].tagged.value.*));
     try testing.expectEqual(10, userdata1);
 
     const DateTime = struct { int: i128 };
@@ -417,7 +424,7 @@ const Expectation = union(enum) {
     map: []const [2]Expectation,
 };
 
-fn expectOne(ex: Expectation, actual: edn.Value, src: []const u8) !void {
+fn expectOne(ex: Expectation, actual: edn.Value, src: [:0]const u8) !void {
     try testing.expectEqualStrings(@tagName(ex), @tagName(actual));
     switch (actual) {
         inline .string,
@@ -858,13 +865,16 @@ test "Tokenizer.edn" {
 
     const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer result.deinit(talloc);
-
     try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
 
 test "unclosed containers" {
-    if (true) return error.SkipZigTest; // TODO
-    try testParse(talloc, "( {}");
+    try testParse(talloc, "{"); // FIXME this should be an error
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "( {}"));
+}
+
+test "tagged exclude ws format" {
+    try testParseOptions(talloc, "(#a 1 #b 2)", .{ .whitespace = .exclude });
 }
 
 test "readme" {
@@ -873,4 +883,47 @@ test "readme" {
     const result = try edn.parseFromSliceAlloc(std.testing.allocator, src, .{}, .{});
     defer result.deinit(std.testing.allocator);
     try std.testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+}
+
+// zig build test -Dtest-filters="fuzz" --summary all --fuzz --port 38495
+test "fuzz" {
+    const Context = struct {
+        fn testOne(_: @This(), input: []const u8) anyerror!void {
+            testParse(talloc, @ptrCast(input)) catch |e| {
+                std.debug.print("{s}\n", .{@errorName(e)});
+                std.debug.print("{s}\n", .{input});
+                std.debug.print("{any}\n", .{input});
+                // return e;
+            };
+        }
+    };
+    const corpus = [_][]const u8{
+        "a (a b c [1 2 3] {:a 1 :b 2})",
+        "{:a 1 :b 2}",
+        \\STR_ESC    #{\" \n \t \\ \r}
+        ,
+        \\KEYWORD    #statez/charset "[a-eg-mo-zA-Z0-9*+!_?%&=<>/.\\-]"
+        ,
+        \\\n       {\i {\l accept symbol_nil nil} symbol nil} ; TODO use #statez/stringset for these
+        \\\t       {\r {\u {\e accept symbol_true nil} symbol nil} symbol nil}
+        \\\f       {\a {\l {\s {\e accept symbol_false nil} symbol nil} symbol nil} symbol nil}
+        ,
+        \\{[1 2 3 4] "tell the people what she wore",
+        \\ [5 6 7 8] "the more you see the more you hate"}
+        ,
+        \\#{:a :b 88 "huat"}
+        ,
+        \\#MyYelpClone/MenuItem {:name "eggs-benedict" :rating 10}
+        ,
+        \\(defrecord MenuItem [name rating])
+        ,
+        \\(clojure.edn/read-string "{:eggs 2 :butter 1 :flour 5}")
+        ,
+        \\42
+        \\3.14159
+        ,
+        \\(:bun :beef-patty 9 "yum!")
+        ,
+    };
+    try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = &corpus });
 }
