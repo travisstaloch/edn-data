@@ -258,6 +258,9 @@ pub const ParseResult = struct {
 
 pub const Options = packed struct {
     userdata: ?*anyopaque = null,
+    /// whether to save whitespace and comments.  exclude means that
+    /// ParseResult.wss.len will be 0 and all whitespace and comments will
+    /// be replaced by a single space in fmtParseResult()
     whitespace: enum(u1) { include, exclude } = .include,
 };
 

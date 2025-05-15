@@ -4,14 +4,16 @@ an edn parser in zig
 ## features
 * parsing
   * parse arbitrary data with `edn.parseFromSliceAlloc()` or `edn.parseFromSliceBuf()`.  `measure()` is used to determine required buffer sizes for `parseFromSliceBuf()`.
+    * `edn.Options.whitespace` - whether to save whitespace and comments.  `.exclude` means that `ParseResult.wss.len` will be 0 and each merged whitespace/comment will be replaced by a single space in `fmtParseResult()`.
   * parse structured data with `edn.parseTypeFromSlice(T)`
     * `edn.parseTypeFromSlice(T)` supports custom parsing when `T` provides a  `pub fn ednParse()`.  see [src/tests.zig](src/tests.zig) `test "ednParse()"` for an example.
   * initial support for [tagged element](https://github.com/edn-format/edn#tagged-elements) handlers.  see [src/tests.zig](src/tests.zig) `test "tagged handler"` for an example.
+  * `ParseResult.find()` - access parsed data with simple queries such as `'0//1//foo'`.  see [src/tests.zig](src/tests.zig) `test "ParseResult find()"` for examples.
 * comptime parsing
   * parse arbitrary data with `edn.parseFromSliceComptime()`
   * parse structured data with `comptime edn.parseTypeFromSlice(T)`
 * formatting
-  * format parse results with `edn.fmtParseResult(result, src)`
+  * format parse results with `edn.fmtParseResult(parse_result, src)`
 
 ## use
 fetch with the package manager
@@ -42,11 +44,25 @@ test "readme" {
 }
 ```
 
+## test
+run tests in [src/tests.zig](src/tests.zig), [src/Tokenizer.zig](src/Tokenizer.zig), and [src/ringbuffer.zig](src/ringbuffer.zig)
+```console
+$ zig build test
+```
+
+## fuzz
+```console
+$ zig build test -Dtest-filters="fuzz parseFromSliceAlloc and fmtParseResult" --summary all --fuzz --port 38495
+```
+```console
+$ zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz --port 38495
+```
+
 ## references
 * https://github.com/edn-format/edn
 * https://github.com/jorinvo/edn-data/blob/main/test/parse.test.ts
 
-## TODO
+## todo
 - [ ] built-in tagged elements
   - [ ] #inst - instant http://www.ietf.org/rfc/rfc3339.txt
   - [ ] #uuid - http://en.wikipedia.org/wiki/Universally_unique_identifier
