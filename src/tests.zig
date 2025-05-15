@@ -307,18 +307,18 @@ fn expectTestCase(s: TestCase) !void {
     try testing.expectEqual(1, s.u2.a);
 }
 
-test "parse into struct" {
-    const src =
-        \\{
-        \\ :n -1, :s "b", :e :a, :f 42, :b true, :o nil,
-        \\ :o2 0, :a [1,2], :v [3,4], :u {:a 1}, :u2 {:a 1}
-        \\}
-    ;
+const TestCase_src =
+    \\{
+    \\ :n -1, :s "b", :e :a, :f 42, :b true, :o nil,
+    \\ :o2 0, :a [1,2], :v [3,4], :u {:a 1}, :u2 {:a 1}
+    \\}
+;
 
-    try expectTestCase(try edn.parseTypeFromSlice(TestCase, src, .{}));
+test "parse into struct" {
+    try expectTestCase(try edn.parseTypeFromSlice(TestCase, TestCase_src, .{}));
     comptime {
         @setEvalBranchQuota(10000);
-        try expectTestCase(try edn.parseTypeFromSlice(TestCase, src, .{}));
+        try expectTestCase(try edn.parseTypeFromSlice(TestCase, TestCase_src, .{}));
     }
 }
 
@@ -885,15 +885,17 @@ test "readme" {
     try std.testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
 
-// zig build test -Dtest-filters="fuzz" --summary all --fuzz --port 38495
-test "fuzz" {
+// zig build test -Dtest-filters="fuzz parseFromSliceAlloc and fmtParseResult" --summary all --fuzz --port 38495
+test "fuzz parseFromSliceAlloc and fmtParseResult" {
     const Context = struct {
         fn testOne(_: @This(), input: []const u8) anyerror!void {
             testParse(talloc, @ptrCast(input)) catch |e| {
+                if (@import("builtin").is_test) return;
+                // TODO log input to file
                 std.debug.print("{s}\n", .{@errorName(e)});
                 std.debug.print("{s}\n", .{input});
                 std.debug.print("{any}\n", .{input});
-                // return e;
+                return;
             };
         }
     };
@@ -926,4 +928,29 @@ test "fuzz" {
         ,
     };
     try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = &corpus });
+}
+
+// zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz --port 38495
+test "fuzz parseTypeFromSlice" {
+    const Context = struct {
+        fn testOne(_: @This(), input: []const u8) anyerror!void {
+            const tc = edn.parseTypeFromSlice(TestCase, @ptrCast(input), .{}) catch |e| {
+                if (@import("builtin").is_test) return;
+                // TODO log input to file
+                std.debug.print("{s}\n", .{@errorName(e)});
+                std.debug.print("{s}\n", .{input});
+                std.debug.print("{any}\n", .{input});
+                return;
+            };
+            expectTestCase(tc) catch |e| {
+                if (@import("builtin").is_test) return;
+                // TODO log input to file
+                std.debug.print("{s}\n", .{@errorName(e)});
+                std.debug.print("{s}\n", .{input});
+                std.debug.print("{any}\n", .{input});
+                return;
+            };
+        }
+    };
+    try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = &.{TestCase_src} });
 }

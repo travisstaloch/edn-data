@@ -2,9 +2,11 @@
 an edn parser in zig
 
 ## features
-* runtime parsing
-  * parse arbitrary data with `edn.parseFromSliceAlloc()` or `edn.parseFromSliceBuf()`
+* parsing
+  * parse arbitrary data with `edn.parseFromSliceAlloc()` or `edn.parseFromSliceBuf()`.  `measure()` is used to determine required buffer sizes for `parseFromSliceBuf()`.
   * parse structured data with `edn.parseTypeFromSlice(T)`
+    * `edn.parseTypeFromSlice(T)` supports custom parsing when `T` provides a  `pub fn ednParse()`.  see [src/tests.zig](src/tests.zig) `test "ednParse()"` for an example.
+  * initial support for [tagged element](https://github.com/edn-format/edn#tagged-elements) handlers.  see [src/tests.zig](src/tests.zig) `test "tagged handler"` for an example.
 * comptime parsing
   * parse arbitrary data with `edn.parseFromSliceComptime()`
   * parse structured data with `comptime edn.parseTypeFromSlice(T)`

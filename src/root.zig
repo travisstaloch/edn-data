@@ -398,7 +398,7 @@ fn parseType(
         return T.ednParse(p, p.options.userdata);
     }
 
-    if (p.tokenizer.peek().tag == .tagged) {
+    if (p.tokenizer.index != 0 and p.tokenizer.isTag(.tagged)) {
         // support tagged element handlers
         // TODO skip discards
         const tag = p.tokenizer.next();
