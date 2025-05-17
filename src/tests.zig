@@ -83,7 +83,7 @@ fn testParse(alloc: std.mem.Allocator, src: [:0]const u8) !void {
 fn testParseOptions(alloc: std.mem.Allocator, src: [:0]const u8, options: edn.Options) !void {
     const result = try edn.parseFromSliceAlloc(alloc, src, options, .{});
     defer result.deinit(alloc);
-    const src1 = try std.fmt.allocPrintZ(alloc, "{}", .{edn.fmtParseResult(result, src)});
+    const src1 = try std.fmt.allocPrintZ(alloc, "{}", .{result.formatter(src)});
     defer alloc.free(src1);
     if (options.whitespace == .include) {
         try testing.expectEqualStrings(src, src1);
@@ -125,8 +125,8 @@ fn testEql(asrc: [:0]const u8, bsrc: [:0]const u8, alen: u8, blen: u8) !void {
     }
     try testing.expect(ares.values[0].eql(asrc, ares.values, bres.values[0], bsrc, bres.values));
 
-    try testing.expectFmt(asrc, "{}", .{edn.fmtParseResult(ares, asrc)});
-    try testing.expectFmt(bsrc, "{}", .{edn.fmtParseResult(bres, bsrc)});
+    try testing.expectFmt(asrc, "{}", .{ares.formatter(asrc)});
+    try testing.expectFmt(bsrc, "{}", .{bres.formatter(bsrc)});
 }
 
 fn testNotEql(asrc: [:0]const u8, bsrc: [:0]const u8, alen: u8, blen: u8) !void {
@@ -155,25 +155,24 @@ inline fn concatStrs(
     }
 }
 
-const test_scalars = [_]struct { [:0]const u8, u8 }{
-    .{ "nil", 1 },
-    .{ "true", 1 },
-    .{ "false", 1 },
-    .{ "1", 1 },
-    .{ "1.0", 1 },
-    .{ "\\c", 1 },
-    .{ "ns/name", 1 },
-    .{ "{:a 1 :b 2 :c 3}", 7 },
-    .{ "#{:a 1 \"foo\"}", 4 },
-    .{ "(:a 1 \"foo\")", 4 },
-};
-
-const test_srcs = test_scalars ++ [_]struct { [:0]const u8, u8 }{
-    concatStrs("(", &test_scalars, ")"),
-    concatStrs("[", &test_scalars, "]"),
-    concatStrs("{", &test_scalars, "}"),
-    concatStrs("#{", &test_scalars, "}"),
-};
+// zig fmt: off
+const test_srcs = [_]struct {u8,  [:0]const u8}{
+   .{1,  \\nil
+}, .{1,  \\true
+}, .{1,  \\false
+}, .{1,  \\1
+}, .{1,  \\1.0
+}, .{1,  \\\c
+}, .{1,  \\ns/name
+}, .{7,  \\{:a 1 :b 2 :c 3}
+}, .{4,  \\#{:a 1 "foo"}
+}, .{4,  \\(:a 1 "foo")
+}, .{23, \\(nil true false 1 1.0 \c ns/name {:a 1 :b 2 :c 3} #{:a 1 "foo"} (:a 1 "foo"))
+}, .{23, \\[nil true false 1 1.0 \c ns/name {:a 1 :b 2 :c 3} #{:a 1 "foo"} (:a 1 "foo")]
+}, .{23, \\{nil true false 1 1.0 \c ns/name {:a 1 :b 2 :c 3} #{:a 1 "foo"} (:a 1 "foo")}
+}, .{23, \\#{nil true false 1 1.0 \c ns/name {:a 1 :b 2 :c 3} #{:a 1 "foo"} (:a 1 "foo")}
+}};
+// zig fmt: on
 
 test "eqluality" {
     try testNotEql("1", "1.0", 1, 1);
@@ -188,10 +187,10 @@ test "eqluality" {
     try testEql(s, s, 23, 23);
     for (test_srcs) |asrc| {
         for (test_srcs) |bsrc| {
-            if (std.mem.eql(u8, asrc[0], bsrc[0]))
-                try testEql(asrc[0], bsrc[0], asrc[1], bsrc[1])
+            if (std.mem.eql(u8, asrc[1], bsrc[1]))
+                try testEql(asrc[1], bsrc[1], asrc[0], bsrc[0])
             else
-                try testNotEql(asrc[0], bsrc[0], asrc[1], bsrc[1]);
+                try testNotEql(asrc[1], bsrc[1], asrc[0], bsrc[0]);
         }
     }
 }
@@ -199,12 +198,12 @@ test "eqluality" {
 test "measure" {
     {
         const measured = try edn.measure("(a, b, c)", .{}, .{});
-        try testing.expectEqual(4, measured.values);
+        try testing.expectEqual(4, measured.capacity);
         try testing.expectEqual(1, measured.top_level_values);
     }
     {
         const measured = try edn.measure("( [a] {:a a} )", .{}, .{});
-        try testing.expectEqual(6, measured.values);
+        try testing.expectEqual(6, measured.capacity);
         try testing.expectEqual(1, measured.top_level_values);
     }
 }
@@ -213,7 +212,7 @@ test "exclude whitespace" {
     const src = "a (a b c [] {:a :b :c :d})";
     const res = try edn.parseFromSliceAlloc(talloc, src, .{ .whitespace = .exclude }, .{});
     defer res.deinit(talloc);
-    try testing.expectFmt(src, "{}", .{edn.fmtParseResult(res, src)});
+    try testing.expectFmt(src, "{}", .{res.formatter(src)});
 }
 
 test "ParseResult find()" {
@@ -266,10 +265,10 @@ test "ParseResult find()" {
 
 test "comptime parse" {
     inline for (test_srcs) |src_len| {
-        const src = src_len[0];
+        const src = src_len[1];
         const fmt = comptime blk: {
             const res = edn.parseFromSliceComptime(src, .{}, .{ .eval_branch_quota = 4000 }) catch unreachable;
-            const final = std.fmt.comptimePrint("{}", .{edn.fmtParseResult(res, src)});
+            const final = std.fmt.comptimePrint("{}", .{res.formatter(src)});
             break :blk final[0..final.len].*;
         };
         try testing.expectEqualStrings(src, &fmt);
@@ -865,28 +864,49 @@ test "Tokenizer.edn" {
 
     const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer result.deinit(talloc);
-    try testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+    try testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
 
 test "unclosed containers" {
-    try testParse(talloc, "{"); // FIXME this should be an error
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "{"));
     try testing.expectError(error.UnclosedContainer, testParse(talloc, "( {}"));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "{ ()"));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "{ (}"));
 }
 
 test "tagged exclude ws format" {
     try testParseOptions(talloc, "(#a 1 #b 2)", .{ .whitespace = .exclude });
 }
 
-test "readme" {
+test "parseFromSliceAlloc demo" {
     // const edn = @import("extensible-data-notation");
     const src = "a (a b c [1 2 3] {:a 1, :b 2})";
     const result = try edn.parseFromSliceAlloc(std.testing.allocator, src, .{}, .{});
     defer result.deinit(std.testing.allocator);
-    try std.testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+    if (!@import("builtin").is_test) { // format helper
+        std.debug.print("{}\n", .{result.formatter(src)});
+    }
+    try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
 
-// zig build test -Dtest-filters="fuzz parseFromSliceAlloc and fmtParseResult" --summary all --fuzz --port 38495
-test "fuzz parseFromSliceAlloc and fmtParseResult" {
+test "parseFromSliceComptime demo" {
+    const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
+    const result = comptime try edn.parseFromSliceComptime(src, .{}, .{});
+    const src2 = std.fmt.comptimePrint("{}", .{comptime result.formatter(src)});
+    try std.testing.expectEqualStrings(src, src2);
+}
+
+test "parseFromSliceBuf demo - runtime no allocation" {
+    const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
+    const measured = comptime try edn.measure(src, .{}, .{}); // src must be comptime known here
+    var values: [measured.capacity]edn.Value = undefined;
+    var wss: [measured.capacity][2]u32 = undefined;
+    const result = try edn.parseFromSliceBuf(src, measured, &values, &wss, .{}, .{});
+    try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
+}
+
+// zig build test -Dtest-filters="fuzz parseFromSliceAlloc and formatter" --summary all --fuzz --port 38495
+test "fuzz parseFromSliceAlloc and formatter" {
     const Context = struct {
         fn testOne(_: @This(), input: []const u8) anyerror!void {
             testParse(talloc, @ptrCast(input)) catch |e| {

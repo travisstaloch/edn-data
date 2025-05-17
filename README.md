@@ -1,21 +1,27 @@
-# extensible data notation
-an edn parser in zig
+## EDN Data - Extensible Data Notation for Zig
 
-## features
-* parsing
-  * parse arbitrary data with `edn.parseFromSliceAlloc()` or `edn.parseFromSliceBuf()`.  `measure()` is used to determine required buffer sizes for `parseFromSliceBuf()`.
-    * `edn.Options.whitespace` - whether to save whitespace and comments.  `.exclude` means that `ParseResult.wss.len` will be 0 and each merged whitespace/comment will be replaced by a single space in `fmtParseResult()`.
-  * parse structured data with `edn.parseTypeFromSlice(T)`
-    * `edn.parseTypeFromSlice(T)` supports custom parsing when `T` provides a  `pub fn ednParse()`.  see [src/tests.zig](src/tests.zig) `test "ednParse()"` for an example.
-  * initial support for [tagged element](https://github.com/edn-format/edn#tagged-elements) handlers.  see [src/tests.zig](src/tests.zig) `test "tagged handler"` for an example.
-  * `ParseResult.find()` - access parsed data with simple queries such as `'0//1//foo'`.  see [src/tests.zig](src/tests.zig) `test "ParseResult find()"` for examples.
+A parser for [Extensible Data Notation (EDN)](https://github.com/edn-format/edn) implemented in Zig. EDN is a data format akin to JSON or [Ziggy](https://ziggy-lang.io/) but with more data types and extensibility features, commonly used in Clojure.
+
+This library provides both runtime and compile-time parsing capabilities for EDN data in Zig applications.
+
+#### Table of Contents
+- [Features](#features)
+- [Usage](#usage)
+
+#### Features
+* parse arbitrary data with `edn.parseFromSliceAlloc()` or `edn.parseFromSliceBuf()`.  `edn.measure()` is used to determine required buffer sizes for `parseFromSliceBuf()`.
+  * `edn.Options.whitespace` - whether to save whitespace and comments.  `.exclude` is like minify and means that `ParseResult.wss.len` will be 0 and each merged whitespace/comment will be replaced by a single space in `fmtParseResult()`.
+* parse structured data with `edn.parseTypeFromSlice(T)`
+  * custom parsing when `T` provides a  `pub fn ednParse()`.  see [src/tests.zig](src/tests.zig) `test "ednParse()"` for an example.
+* [tagged element](https://github.com/edn-format/edn#tagged-elements) handlers.  see [src/tests.zig](src/tests.zig) `test "tagged handler"` for an example.
+* `ParseResult.find()` - access parsed data with simple queries such as `'0//1//foo'`.  see [src/tests.zig](src/tests.zig) `test "ParseResult find()"` for examples.
 * comptime parsing
   * parse arbitrary data with `edn.parseFromSliceComptime()`
   * parse structured data with `comptime edn.parseTypeFromSlice(T)`
 * formatting
   * format parse results with `edn.fmtParseResult(parse_result, src)`
 
-## use
+#### Usage
 fetch with the package manager
 ```console
 # with zig 0.14.0
@@ -35,22 +41,43 @@ exe.root_module.addImport("extensible-data-notation", edn_dep.module("extensible
 ```
 ```zig
 // main.zig
-test "readme" {
-    // const edn = @import("extensible-data-notation");
+const edn = @import("extensible-data-notation");
+test "parseFromSliceAlloc demo" {
     const src = "a (a b c [1 2 3] {:a 1, :b 2})";
     const result = try edn.parseFromSliceAlloc(std.testing.allocator, src, .{}, .{});
     defer result.deinit(std.testing.allocator);
+    if (!@import("builtin").is_test) {
+        std.debug.print("{}\n", .{edn.fmtParseResult(result, src)});
+    }
+    try std.testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+}
+```
+```zig
+test "parseFromSliceComptime demo" {
+    const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
+    const result = comptime try edn.parseFromSliceComptime(src, .{}, .{});
+    const src2 = std.fmt.comptimePrint("{}", .{comptime edn.fmtParseResult(result, src)});
+    try std.testing.expectEqualStrings(src, src2);
+}
+```
+```zig
+test "parseFromSliceBuf demo - runtime no allocation" {
+    const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
+    const measured = comptime try edn.measure(src, .{}, .{}); // src must be comptime known here
+    var values: [measured.capacity]edn.Value = undefined;
+    var wss: [measured.capacity][2]u32 = undefined;
+    const result = try edn.parseFromSliceBuf(src, measured, &values, &wss, .{}, .{});
     try std.testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
 }
 ```
 
-## test
+#### Testing
 run tests in [src/tests.zig](src/tests.zig), [src/Tokenizer.zig](src/Tokenizer.zig), and [src/ringbuffer.zig](src/ringbuffer.zig)
 ```console
 $ zig build test
 ```
 
-## fuzz
+##### Fuzzing
 ```console
 $ zig build test -Dtest-filters="fuzz parseFromSliceAlloc and fmtParseResult" --summary all --fuzz --port 38495
 ```
@@ -58,11 +85,11 @@ $ zig build test -Dtest-filters="fuzz parseFromSliceAlloc and fmtParseResult" --
 $ zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz --port 38495
 ```
 
-## references
+#### References
 * https://github.com/edn-format/edn
 * https://github.com/jorinvo/edn-data/blob/main/test/parse.test.ts
 
-## todo
+#### Ideas and Planned Features
 - [ ] built-in tagged elements
   - [ ] #inst - instant http://www.ietf.org/rfc/rfc3339.txt
   - [ ] #uuid - http://en.wikipedia.org/wiki/Universally_unique_identifier
@@ -76,4 +103,4 @@ $ zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz -
   - [ ] add more "unclosed containers" test cases
 - [w] fuzz test the parser
   - [x] parseFromSliceAlloc, fmtParseResult
-  - [ ] expand fuzzing: parseTypeFromSlice
+  - [x] expand fuzzing: parseTypeFromSlice

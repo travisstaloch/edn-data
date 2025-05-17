@@ -3,9 +3,6 @@
 pub const ParseError = error{
     Parse,
     Eof,
-    InvalidToken,
-    InvalidChar,
-    InvalidString,
     HandlerParse,
     MissingHandler,
     EndOfMap,
@@ -13,12 +10,16 @@ pub const ParseError = error{
     InvalidStruct,
     InvalidStructField,
     MissingFields,
+    InvalidToken,
+    InvalidChar,
+    InvalidString,
     InvalidUnion,
     InvalidBool,
     InvalidArray,
     InvalidEnum,
     InvalidInt,
     InvalidFloat,
+    UnclosedContainer,
 } ||
     Allocator.Error ||
     std.fmt.ParseIntError ||
@@ -60,21 +61,21 @@ pub const Value = union(Value.Tag) {
     set: ValueList,
 
     pub const Tag = enum(u8) {
-        nil = 0,
-        true = 1,
-        false = 2,
-        string = 3,
-        character = 4,
-        keyword = 5,
-        symbol = 6,
-        tagged = 7,
-        integer = 8,
-        float = 9,
+        nil,
+        true,
+        false,
+        string,
+        character,
+        keyword,
+        symbol,
+        tagged,
+        integer,
+        float,
         // containers
-        list = 10,
-        vector = 11,
-        map = 12,
-        set = 13,
+        list,
+        vector,
+        map,
+        set,
     };
 
     pub fn eql(
@@ -182,8 +183,9 @@ pub const TaggedElementHandler = struct {
 
 pub const ParseResult = struct {
     values: []const Value,
+    /// whitespaces
     wss: []const [2]u32,
-    final_ws: [2]u32,
+    trailing_ws: [2]u32,
     top_level_values: u32,
 
     pub fn deinit(r: ParseResult, alloc: Allocator) void {
@@ -254,6 +256,13 @@ pub const ParseResult = struct {
         }
         return cur;
     }
+
+    pub fn formatter(
+        parse_result: ParseResult,
+        src: [:0]const u8,
+    ) std.fmt.Formatter(formatParseResult) {
+        return .{ .data = .{ .src = src, .parse_result = parse_result, .parent = null } };
+    }
 };
 
 pub const Options = packed struct {
@@ -277,7 +286,7 @@ pub const ParseMode = enum(u1) {
 
 pub const Measured = struct {
     /// total number of values found during parsing
-    values: u32 = 0,
+    capacity: u32 = 0,
     /// total number of values found at top level
     top_level_values: u32 = 0,
 };
@@ -296,10 +305,10 @@ pub fn measure(
 /// users may call measure() to get the necessary sizes.
 pub fn parseFromSliceBuf(
     src: [:0]const u8,
-    options: Options,
+    measured: Measured,
     values: []Value,
     wss: [][2]u32,
-    measured: Measured,
+    options: Options,
     comptime comptime_options: ComptimeOptions,
 ) !ParseResult {
     var p = try Parser.init(
@@ -312,24 +321,24 @@ pub fn parseFromSliceBuf(
         comptime_options.handlers,
     );
     p.measured = measured;
-    const final_ws = try parseValues(&p, .allocate);
+    const trailing_ws = try parseValues(&p, .allocate);
 
-    debug("measured.values {} parsed values count {}", .{ p.measured.values, p.values - p.values_start });
+    debug("measured.values {} parsed values count {}", .{ measured.capacity, p.values - p.values_start });
 
     // TODO verify that all containers are closed.  currently we can trip this assertion with
-    if (p.values != p.values_start + measured.values) return error.UnclosedContainer;
+    if (p.values != p.values_start + measured.capacity) return error.UnclosedContainer;
     assert(p.values_start == values.ptr);
-    if (p.options.whitespace == .include) assert(p.wss == p.wss_start + measured.values);
+    if (p.options.whitespace == .include) assert(p.wss == p.wss_start + measured.capacity);
     assert(p.wss_start == wss.ptr);
 
     return .{
-        .values = p.values_start[0..measured.values],
+        .values = p.values_start[0..measured.capacity],
         .wss = if (options.whitespace == .include)
-            p.wss_start[0..measured.values]
+            p.wss_start[0..measured.capacity]
         else
             &.{},
         .top_level_values = measured.top_level_values,
-        .final_ws = final_ws,
+        .trailing_ws = trailing_ws,
     };
 }
 
@@ -344,15 +353,15 @@ pub fn parseFromSliceAlloc(
 ) !ParseResult {
     const measured = try measure(src, options, comptime_options);
 
-    const values = try alloc.alloc(Value, measured.values);
+    const values = try alloc.alloc(Value, measured.capacity);
     errdefer alloc.free(values);
     const wss: [][2]u32 = if (options.whitespace == .include)
-        try alloc.alloc([2]u32, measured.values)
+        try alloc.alloc([2]u32, measured.capacity)
     else
         &.{};
     errdefer alloc.free(wss);
 
-    return parseFromSliceBuf(src, options, values, wss, measured, comptime_options);
+    return parseFromSliceBuf(src, measured, values, wss, options, comptime_options);
 }
 
 pub const ComptimeOptions = struct {
@@ -368,9 +377,9 @@ pub inline fn parseFromSliceComptime(
     comptime {
         @setEvalBranchQuota(comptime_options.eval_branch_quota);
         const measured = try measure(src, options, comptime_options);
-        var values: [measured.values]Value = undefined;
-        var ws: [measured.values][2]u32 = undefined;
-        return parseFromSliceBuf(src, options, &values, &ws, measured, comptime_options);
+        var values: [measured.capacity]Value = undefined;
+        var wss: [measured.capacity][2]u32 = undefined;
+        return try parseFromSliceBuf(src, measured, &values, &wss, options, comptime_options);
     }
 }
 
@@ -560,13 +569,6 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
     return t;
 }
 
-pub fn fmtParseResult(
-    parse_result: ParseResult,
-    src: [:0]const u8,
-) std.fmt.Formatter(formatParseResult) {
-    return .{ .data = .{ .src = src, .parse_result = parse_result, .parent = null } };
-}
-
 fn formatParseResult(
     data: struct { src: [:0]const u8, parse_result: ParseResult, parent: ?Value },
     comptime fmt: []const u8,
@@ -582,7 +584,7 @@ fn formatParseResult(
             .parent = data.parent,
         }, fmt, options, writer);
     }
-    const ws = data.parse_result.final_ws;
+    const ws = data.parse_result.trailing_ws;
     try writer.writeAll(data.src[ws[0]..ws[1]]);
 }
 
@@ -778,19 +780,22 @@ fn parseChar(p: *Parser, t: Token) !Value {
     return .{ .character = char };
 }
 
-fn pairedTag(tag: Token.Tag) Token.Tag {
+fn listEndTags(tag: Token.Tag) [2]Token.Tag {
     return switch (tag) {
-        .lparen => .rparen,
-        .lbrace => .rbrace,
-        .lbracket => .rbracket,
-        .set => .rbrace,
+        .lparen => .{ .rparen, .rbracket },
+        .lbracket => .{ .rbracket, .rparen },
         else => std.debug.panic("unexpected tag '{s}'", .{@tagName(tag)}),
     };
 }
 
-fn parseOrMeasureList(p: *Parser, t: Token, comptime mode: ParseMode) !ValueList {
+fn parseOrMeasureList(
+    p: *Parser,
+    t: Token,
+    comptime start_tag: Token.Tag,
+    comptime mode: ParseMode,
+) !ValueList {
     const tokenizer = p.tokenizer;
-    const len, _ = try parseList(p, t, .measure, undefined, undefined);
+    const len, _ = try parseList(p, t, start_tag, .measure, undefined, undefined);
     if (mode == .measure) {
         var measured: ValueList = undefined;
         measured.values.len = len;
@@ -802,7 +807,7 @@ fn parseOrMeasureList(p: *Parser, t: Token, comptime mode: ParseMode) !ValueList
     p.values = p.values[len..];
     const wss = p.wss[0..len];
     p.wss = p.wss[len..];
-    _, const trailing_ws = try parseList(p, t, .allocate, vs, wss);
+    _, const trailing_ws = try parseList(p, t, start_tag, .allocate, vs, wss);
     return .{
         .values = vs,
         .wss = wss,
@@ -814,25 +819,33 @@ fn parseOrMeasureList(p: *Parser, t: Token, comptime mode: ParseMode) !ValueList
 fn parseList(
     p: *Parser,
     prefix: Token,
+    comptime start_tag: Token.Tag,
     comptime mode: ParseMode,
     result: []Value,
     result_wss: [][2]u32,
 ) ParseError!struct { u32, [2]u32 } {
     debug("{s: <[1]}parseList('{2s}', {3s})", .{ "", p.depth * 2, @tagName(prefix.tag), @tagName(mode) });
     assert(prefix.tag == .lparen or prefix.tag == .lbracket);
+    const end_tag, const other_end_tag = comptime listEndTags(start_tag);
     p.depth += 1;
     defer p.depth -= 1;
-
     var i: u32 = 0;
-    const end_tag = pairedTag(prefix.tag);
     var trailing_ws: [2]u32 = undefined;
     while (true) : (i += 1) {
         const c = p.tokenizer.next();
         debug("{s: <[1]}parseList('{2s}')", .{ "", p.depth * 2, @tagName(c.tag) });
-        if (c.tag == end_tag) {
-            trailing_ws = .{ c.loc.ws_start, c.loc.end };
-            p.last_token = c;
-            break;
+        switch (c.tag) {
+            end_tag => {
+                trailing_ws = .{ c.loc.ws_start, c.loc.end };
+                p.last_token = c;
+                break;
+            },
+            other_end_tag, .rbrace => {
+                trailing_ws = .{ c.loc.ws_start, c.loc.end };
+                p.last_token = c;
+                return error.UnclosedContainer;
+            },
+            else => {},
         }
         if (mode == .allocate) {
             try parseValue(p, c, mode, result[i..].ptr, result_wss[i..].ptr);
@@ -872,8 +885,8 @@ fn parseOrMeasureMap(p: *Parser, prefix: Token, comptime mode: ParseMode) !Value
 
 fn parseMap(p: *Parser, prefix: Token, comptime mode: ParseMode, result: *ValueMap) ParseError!u32 {
     assert(prefix.tag == .lbrace);
-    debug("{s: <[1]}parseMap({2s})", .{ "", p.depth * 2, @tagName(mode) });
-    defer debug("{s: <[1]}<parseMap({2s})", .{ "", p.depth * 2, @tagName(mode) });
+    // debug("{s: <[1]}parseMap({2s})", .{ "", p.depth * 2, @tagName(mode) });
+    // defer debug("{s: <[1]}<parseMap({2s})", .{ "", p.depth * 2, @tagName(mode) });
     p.depth += 1;
     defer p.depth -= 1;
 
@@ -881,10 +894,19 @@ fn parseMap(p: *Parser, prefix: Token, comptime mode: ParseMode, result: *ValueM
     while (true) : (i += 1) {
         const c = p.tokenizer.next();
         debug("{s: <[1]}parseMap '{2s}'", .{ "", p.depth * 2, @tagName(c.tag) });
-        if (c.tag == .rbrace) {
-            if (mode == .allocate) result.trailing_ws = .{ c.loc.ws_start, c.loc.end };
-            p.last_token = c;
-            break;
+        switch (c.tag) {
+            .rbrace => {
+                if (mode == .allocate) result.trailing_ws = .{ c.loc.ws_start, c.loc.end };
+                p.last_token = c;
+                break;
+            },
+            .rparen, .rbracket, .eof => {
+                if (mode == .allocate) result.trailing_ws = .{ c.loc.ws_start, c.loc.end };
+                p.last_token = c;
+                return error.UnclosedContainer;
+            },
+
+            else => {},
         }
 
         if (mode == .allocate) {
@@ -1016,7 +1038,7 @@ fn parseTagged(p: *Parser, t: Token, comptime mode: ParseMode) ParseError!Value 
     } else next;
 
     if (mode == .measure) {
-        p.measured.values += 2;
+        p.measured.capacity += 2;
     } else {
         p.values[0] = .{ .tagged = .{ .tag = t, .value = &p.values[1] } };
         p.values[1] = v;
@@ -1038,7 +1060,14 @@ pub fn userParseValue(p: *Parser) !Value {
 
 fn parseValueInner(p: *Parser, t: Token, comptime mode: ParseMode) !Value {
     // std.debug.print("{s: <[1]}{2s}:\n  ws '{3s}'\n  content '{4s}'\n", .{ "", p.depth * 2, @tagName(t.tag), p.tokenizer.src[t.loc.ws_start..t.loc.start], t.src(p.tokenizer.src) });
-    debug("{s: <[1]}parseValueInner() '{2s}'", .{ "", p.depth * 2, @tagName(t.tag) });
+    debug("{s: <[1]}parseValueInner() {2s}: '{3s}' last_token '{4s}' measured.capacity {5}", .{
+        "",
+        p.depth * 2,
+        @tagName(t.tag),
+        t.src(p.tokenizer.src),
+        if (p.last_token.loc.end < p.tokenizer.src.len) p.last_token.src(p.tokenizer.src) else "",
+        p.measured.capacity,
+    });
     if (p.last_token.loc.end == t.loc.start and
         !t.tag.isClosing() and
         !p.last_token.tag.isOpening())
@@ -1048,24 +1077,24 @@ fn parseValueInner(p: *Parser, t: Token, comptime mode: ParseMode) !Value {
     p.last_token = t;
 
     return switch (t.tag) {
-        .int => .{ .integer = try std.fmt.parseInt(i128, t.src(p.tokenizer.src), 0) },
-        .str => .{ .string = t },
-        .char => try parseChar(p, t),
-        .keyword => .{ .keyword = t },
-        .lparen => .{ .list = try parseOrMeasureList(p, t, mode) },
-        .lbracket => .{ .vector = try parseOrMeasureList(p, t, mode) },
-        .lbrace => .{ .map = try parseOrMeasureMap(p, t, mode) },
-        .rbrace => return error.EndOfMap,
-        .set => .{ .set = try parseOrMeasureSet(p, t, mode) },
-        .discard => try parseDiscard(p, t, mode),
-        .tagged => try parseTagged(p, t, mode),
-        .eof => return err(p, "unexpected end of file", .{}, error.Eof),
-        .symbol => .{ .symbol = t },
-        .invalid => return err(p, "invalid token '{s}'", .{t.src(p.tokenizer.src)}, error.InvalidToken),
-        .float => .{ .float = t },
         .nil => .nil,
         .true => .true,
         .false => .false,
+        .int => .{ .integer = try std.fmt.parseInt(i128, t.src(p.tokenizer.src), 0) },
+        .float => .{ .float = t },
+        .str => .{ .string = t },
+        .char => try parseChar(p, t),
+        .discard => try parseDiscard(p, t, mode),
+        .tagged => try parseTagged(p, t, mode),
+        .keyword => .{ .keyword = t },
+        .symbol => .{ .symbol = t },
+        .lparen => .{ .list = try parseOrMeasureList(p, t, .lparen, mode) },
+        .lbracket => .{ .vector = try parseOrMeasureList(p, t, .lbracket, mode) },
+        .lbrace => .{ .map = try parseOrMeasureMap(p, t, mode) },
+        .rbrace => return error.EndOfMap,
+        .set => .{ .set = try parseOrMeasureSet(p, t, mode) },
+        .eof => return err(p, "unexpected end of file", .{}, error.Eof),
+        .invalid => return err(p, "invalid token '{s}'", .{t.src(p.tokenizer.src)}, error.InvalidToken),
         .rparen, .rbracket => return err(p, "unexpected token '{s}'", .{@tagName(t.tag)}, error.InvalidToken),
     };
 }
@@ -1076,7 +1105,7 @@ fn parseValue(p: *Parser, t: Token, comptime mode: ParseMode, result: [*]Value, 
     debug("{s: <[1]}parseValue({2s})", .{ "", p.depth * 2, @tagName(mode) });
 
     if (mode == .measure) {
-        p.measured.values += 1;
+        p.measured.capacity += 1;
     } else {
         result[0] = v;
         if (p.options.whitespace == .include) result_wss[0] = .{ t.loc.ws_start, t.loc.start };
@@ -1090,17 +1119,17 @@ fn parseValues(p: *Parser, comptime mode: ParseMode) ![2]u32 {
     var top_level_wss: [][2]u32 = p.wss_start[0..p.measured.top_level_values];
     debug("{s: <[1]}parseValues({2s}) {3}", .{ "", p.depth * 2, @tagName(mode), p.measured });
 
-    var final_ws: [2]u32 = undefined;
+    var trailing_ws: [2]u32 = undefined;
     while (true) {
         const t = p.tokenizer.next();
         if (t.tag == .eof) {
-            final_ws = .{ t.loc.ws_start, t.loc.end };
+            trailing_ws = .{ t.loc.ws_start, t.loc.end };
             break;
         }
         if (mode == .allocate) {
             parseValue(p, t, mode, top_level_vs.ptr, top_level_wss.ptr) catch |e| switch (e) {
                 error.Eof => {
-                    final_ws = .{ t.loc.ws_start, t.loc.end };
+                    trailing_ws = .{ t.loc.ws_start, t.loc.end };
                     break;
                 },
                 else => return e,
@@ -1110,7 +1139,7 @@ fn parseValues(p: *Parser, comptime mode: ParseMode) ![2]u32 {
         } else {
             parseValue(p, t, mode, undefined, undefined) catch |e| switch (e) {
                 error.Eof => {
-                    final_ws = .{ t.loc.ws_start, t.loc.end };
+                    trailing_ws = .{ t.loc.ws_start, t.loc.end };
                     break;
                 },
                 else => return e,
@@ -1121,7 +1150,7 @@ fn parseValues(p: *Parser, comptime mode: ParseMode) ![2]u32 {
 
     if (mode == .allocate) assert(top_level_vs.len == 0);
 
-    return final_ws;
+    return trailing_ws;
 }
 
 const log = std.log.scoped(.edn);

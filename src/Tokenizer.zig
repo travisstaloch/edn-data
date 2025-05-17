@@ -676,7 +676,7 @@ inline fn parseExpectations(args: anytype) []const Expectation {
 test "edn.edn" {
     const f = try std.fs.cwd().openFile("examples/edn.edn", .{});
     defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, @enumFromInt(12), 0);
+    const src = try f.readToEndAllocOptions(talloc, 100000, null, .@"8", 0);
     defer talloc.free(src);
 
     const expectations = parseExpectations(.{ // zig fmt: off
@@ -777,11 +777,6 @@ test "edn.edn" {
 }
 
 test "Tokenizer.edn" {
-    const f = try std.fs.cwd().openFile("examples/Tokenizer.edn", .{});
-    defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, @enumFromInt(12), 0);
-    defer talloc.free(src);
-
     const expectations = parseExpectations(.{ // zig fmt: off
 
         \\; * character sets
@@ -846,9 +841,9 @@ test "Tokenizer.edn" {
         // rest of file omitted        
     }); // zig fmt: on
 
-    inline for (expectations, 0..) |expecteds, i| {
-        expectTokens(expecteds[0], expecteds[1]) catch |e| {
-            std.debug.print("expectation {}: {s}\n{any}\n", .{ i, expecteds[0], expecteds[1] });
+    inline for (expectations, 0..) |expectation, i| {
+        expectTokens(expectation[0], expectation[1]) catch |e| {
+            std.debug.print("expectation {}: {s}\n{any}\n", .{ i, expectation[0], expectation[1] });
             return e;
         };
     }
