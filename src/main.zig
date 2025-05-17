@@ -16,5 +16,5 @@ pub fn main() !void {
     defer alloc.free(src);
     var result = try edn.parseFromSliceAlloc(alloc, src, .{}, .{});
     defer result.deinit(alloc);
-    try std.io.getStdOut().writer().print("{}", .{edn.fmtParseResult(result, src)});
+    try std.io.getStdOut().writer().print("{}", .{result.formatter(src)});
 }

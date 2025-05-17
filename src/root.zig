@@ -325,7 +325,7 @@ pub fn parseFromSliceBuf(
 
     debug("measured.values {} parsed values count {}", .{ measured.capacity, p.values - p.values_start });
 
-    // TODO verify that all containers are closed.  currently we can trip this assertion with
+    // TODO remove this after early catching when a container isn't closed.  currently errors on unclosed map
     if (p.values != p.values_start + measured.capacity) return error.UnclosedContainer;
     assert(p.values_start == values.ptr);
     if (p.options.whitespace == .include) assert(p.wss == p.wss_start + measured.capacity);
@@ -840,7 +840,7 @@ fn parseList(
                 p.last_token = c;
                 break;
             },
-            other_end_tag, .rbrace => {
+            other_end_tag, .rbrace, .eof => {
                 trailing_ws = .{ c.loc.ws_start, c.loc.end };
                 p.last_token = c;
                 return error.UnclosedContainer;
@@ -974,10 +974,18 @@ fn parseSet(
     while (true) : (i += 1) {
         const c = p.tokenizer.next();
         debug("{s: <[1]}parseSet '{2s}' '{3s}'", .{ "", p.depth * 2, @tagName(c.tag), c.loc.src(p.tokenizer.src) });
-        if (c.tag == .rbrace) {
-            trailing_ws = .{ c.loc.ws_start, c.loc.end };
-            p.last_token = c;
-            break;
+        switch (c.tag) {
+            .rbrace => {
+                trailing_ws = .{ c.loc.ws_start, c.loc.end };
+                p.last_token = c;
+                break;
+            },
+            .rparen, .rbracket, .eof => {
+                trailing_ws = .{ c.loc.ws_start, c.loc.end };
+                p.last_token = c;
+                return error.UnclosedContainer;
+            },
+            else => {},
         }
 
         if (mode == .allocate) {

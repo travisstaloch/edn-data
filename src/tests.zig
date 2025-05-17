@@ -138,23 +138,6 @@ fn testNotEql(asrc: [:0]const u8, bsrc: [:0]const u8, alen: u8, blen: u8) !void 
     };
 }
 
-inline fn concatStrs(
-    comptime prefix: [:0]const u8,
-    comptime scalars: []const struct { []const u8, u8 },
-    comptime suffix: [:0]const u8,
-) struct { [:0]const u8, u8 } {
-    comptime {
-        var res: [:0]const u8 = prefix;
-        var len: u8 = 1;
-        for (scalars, 0..) |s, i| {
-            res = res ++ (if (i == 0) "" else " ") ++ s[0];
-            len += s[1];
-        }
-        res = res ++ suffix;
-        return .{ res, len };
-    }
-}
-
 // zig fmt: off
 const test_srcs = [_]struct {u8,  [:0]const u8}{
    .{1,  \\nil
@@ -869,9 +852,15 @@ test "Tokenizer.edn" {
 
 test "unclosed containers" {
     try testing.expectError(error.UnclosedContainer, testParse(talloc, "{"));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "( {}"));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "{ ()"));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "{ (}"));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "#{"));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "("));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "["));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "{)"));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "{]"));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "#{)"));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "#{]"));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "(}"));
+    try testing.expectError(error.UnclosedContainer, testParse(talloc, "[}"));
 }
 
 test "tagged exclude ws format" {
@@ -905,11 +894,27 @@ test "parseFromSliceBuf demo - runtime no allocation" {
     try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
 
+fn fuzzOne(src: [:0]const u8) !void {
+    std.debug.print("\n{s}\n{any}\n", .{ src, src });
+    {
+        const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
+        defer result.deinit(talloc);
+        const src1 = try std.fmt.allocPrintZ(talloc, "{}", .{result.formatter(src)});
+        defer talloc.free(src1);
+    }
+    {
+        const result = try edn.parseFromSliceAlloc(talloc, src, .{ .whitespace = .exclude }, .{});
+        defer result.deinit(talloc);
+        const src1 = try std.fmt.allocPrintZ(talloc, "{}", .{result.formatter(src)});
+        defer talloc.free(src1);
+    }
+}
+
 // zig build test -Dtest-filters="fuzz parseFromSliceAlloc and formatter" --summary all --fuzz --port 38495
 test "fuzz parseFromSliceAlloc and formatter" {
     const Context = struct {
         fn testOne(_: @This(), input: []const u8) anyerror!void {
-            testParse(talloc, @ptrCast(input)) catch |e| {
+            fuzzOne(@ptrCast(input)) catch |e| {
                 if (@import("builtin").is_test) return;
                 // TODO log input to file
                 std.debug.print("{s}\n", .{@errorName(e)});
