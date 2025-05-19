@@ -872,9 +872,9 @@ test "parseFromSliceAlloc demo with Diagnostic" {
     const src = "a (a b c [1 2 3] {:a 1, :b 2})";
     // on error, Diagnostic line, column, and error_message will be populated.
     var diag: edn.Diagnostic = .{ .file_path = "<test-file>" };
-    const result = edn.parseFromSliceAlloc(std.testing.allocator, src, .{ .diagnostic = &diag }, .{}) catch {
+    const result = edn.parseFromSliceAlloc(std.testing.allocator, src, .{ .diagnostic = &diag }, .{}) catch |e| {
         std.log.debug("{}:{} {s}\n", .{ diag.line, diag.column, diag.error_message });
-        return;
+        return e;
     };
     defer result.deinit(std.testing.allocator);
     if (!@import("builtin").is_test) { // use format helper

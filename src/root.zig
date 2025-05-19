@@ -383,7 +383,7 @@ pub fn parseFromSliceAlloc(
         &.{};
     errdefer alloc.free(wss);
 
-    return parseFromSliceBuf(src, measured, values, wss, options, comptime_options);
+    return try parseFromSliceBuf(src, measured, values, wss, options, comptime_options);
 }
 
 pub const ComptimeOptions = struct {
@@ -465,10 +465,10 @@ fn parseType(
                 .keyword => blk: {
                     const key = Value{ .keyword = c };
                     break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.tokenizer.src)[1..]) orelse
-                        return err(p, "", .{}, error.InvalidStructField, c);
+                        return error.InvalidStructField;
                 },
                 else => {
-                    return err(p, "", .{}, error.InvalidUnion, c);
+                    return error.InvalidUnion;
                 },
             };
             debug("{s: <[1]}parseType union key {2s}", .{ "", p.depth * 2, @tagName(field) });
@@ -479,7 +479,7 @@ fn parseType(
                     try parseType(@FieldType(T, @tagName(tag)), T, p),
                 ),
             };
-            if (consume(.rbrace, p) == null) return err(p, "", .{}, error.InvalidUnion, c);
+            if (consume(.rbrace, p) == null) return error.InvalidUnion;
             break :u u;
         },
         .bool => blk: {
@@ -496,7 +496,7 @@ fn parseType(
         },
         .float => blk: {
             const t = p.tokenizer.next();
-            if (t.tag != .float and t.tag != .int) return err(p, "", .{}, error.InvalidFloat, t);
+            if (t.tag != .float and t.tag != .int) return error.InvalidFloat;
             break :blk std.fmt.parseFloat(T, t.src(p.tokenizer.src));
         },
         .pointer => |i| blk: switch (i.size) {
@@ -563,7 +563,7 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
                 break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.tokenizer.src)[1..]) orelse
                     return error.InvalidStructField;
             },
-            else => return err(p, "unexpected '{s}'", .{c.src(p.tokenizer.src)}, error.InvalidStruct, c),
+            else => return error.InvalidStruct,
         };
         debug("{s: <[1]}parseStruct key {2s}", .{ "", p.depth * 2, @tagName(field) });
 
@@ -583,11 +583,11 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
                 @field(t, @tagName(tag)) = default;
                 seen_fields.insert(tag);
             } else {
-                err(p, "missing field '{s}'", .{@tagName(tag)}, error.MissingFields, p.tokenizer.peek()) catch {};
+                return error.MissingFields;
             }
         },
     };
-    if (seen_fields.complement().count() != 0) return err(p, "", .{}, error.MissingFields, p.tokenizer.peek());
+    if (seen_fields.complement().count() != 0) return error.MissingFields;
     return t;
 }
 
@@ -1095,7 +1095,10 @@ fn parseValueInner(p: *Parser, t: Token, comptime mode: ParseMode) !Value {
 }
 
 fn parseValue(p: *Parser, t: Token, comptime mode: ParseMode, result: [*]Value, result_wss: [*][2]u32) ParseError!void {
-    const v = try parseValueInner(p, t, mode);
+    const v = parseValueInner(p, t, mode) catch |e| {
+        printDiagnostic(p, e, p.tokenizer.peek());
+        return e;
+    };
 
     debug("{s: <[1]}parseValue({2s})", .{ "", p.depth * 2, @tagName(mode) });
 
@@ -1148,9 +1151,7 @@ fn parseValues(p: *Parser, comptime mode: ParseMode) ![2]u32 {
     return trailing_ws;
 }
 
-const log = std.log.scoped(.edn);
-
-pub fn err(p: *const Parser, comptime fmt: []const u8, args: anytype, e: ParseError, t: Token) ParseError {
+fn printDiagnostic(p: *const Parser, e: ParseError, t: Token) void {
     if (p.options.diagnostic) |diag| { // user wants a diagnostic
         diag.* = .{ .line = 0, .column = 0 };
         for (p.tokenizer.src[0..t.loc.start]) |c| {
@@ -1163,12 +1164,25 @@ pub fn err(p: *const Parser, comptime fmt: []const u8, args: anytype, e: ParseEr
         }
         var fbs = std.io.fixedBufferStream(&diag.error_message);
         if (diag.file_path) |file_path| {
-            fbs.writer().print("{s}:{}:{} " ++ fmt ++ "\n", .{ file_path, diag.line, diag.column } ++ args) catch {};
-        } else fbs.writer().print("{}:{} " ++ fmt ++ "\n", .{ diag.line, diag.column } ++ args) catch {};
+            fbs.writer().print("error: {s}:{}:{} {s}. source '{s}'.\n", .{
+                file_path,
+                diag.line,
+                diag.column,
+                @errorName(e),
+                t.src(p.tokenizer.src),
+            }) catch {};
+        } else {
+            fbs.writer().print("error: {}:{} {s}. source '{s}'.\n", .{
+                diag.line,
+                diag.column,
+                @errorName(e),
+                t.src(p.tokenizer.src),
+            }) catch {};
+        }
     }
-    return e;
 }
 
+const log = std.log.scoped(.edn);
 fn debug(comptime fmt: []const u8, args: anytype) void {
     _ = fmt; // autofix
     _ = args; // autofix

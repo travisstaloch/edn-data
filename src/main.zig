@@ -16,9 +16,9 @@ pub fn main() !void {
     defer alloc.free(src);
     var diag: edn.Diagnostic = .{ .file_path = args[1] };
     const result = edn.parseFromSliceAlloc(alloc, src, .{ .diagnostic = &diag }, .{}) catch {
-        try std.io.getStdErr().writer().print("{s}", .{diag.error_message});
+        try std.io.getStdErr().writer().print("{s}\n", .{diag.error_message});
         return;
     };
     defer result.deinit(alloc);
-    try std.io.getStdOut().writer().print("{}", .{result.formatter(src)});
+    try std.io.getStdOut().writer().print("{}\n", .{result.formatter(src)});
 }
