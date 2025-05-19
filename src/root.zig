@@ -27,6 +27,16 @@ pub const ParseError = error{
 
 pub const Token = Tokenizer.Token;
 
+pub const Diagnostic = struct {
+    /// zero based
+    line: u32 = 0,
+    column: u32 = 0,
+    /// user is responsible for setting file_path
+    file_path: ?[]const u8 = null,
+
+    const default: Diagnostic = .{ .line = std.math.maxInt(u32), .column = std.math.maxInt(u32) };
+};
+
 pub const ValueList = struct {
     values: []Value,
     wss: [][2]u32,
@@ -115,6 +125,20 @@ pub const Value = union(Value.Tag) {
                 // else => std.debug.panic("TODO {s}", .{@tagName(a)}),
             };
     }
+
+    pub fn formatter(
+        value: *const Value,
+        src: [:0]const u8,
+        parse_result: ParseResult,
+        parent: ?*const Value,
+    ) std.fmt.Formatter(formatValue) {
+        return .{ .data = .{
+            .value = value,
+            .src = src,
+            .parse_result = parse_result,
+            .parent = parent,
+        } };
+    }
 };
 
 pub const MapContext = struct {
@@ -193,68 +217,61 @@ pub const ParseResult = struct {
         alloc.free(r.wss);
     }
 
-    fn getList(list: []Value, n: u32) !Value {
-        if (n >= list.len) return error.PathNotFound;
-        return list[n];
-    }
-
-    /// path: search components joined by double slashes ('//'). i.e. '0//1//foo'
-    pub fn find(r: ParseResult, path: []const u8, src: [:0]const u8) !?Value {
-        var it = mem.splitSequence(u8, path, "//");
-        var cur: Value = .{ .list = .{
-            .values = @constCast(r.values[0..r.top_level_values]),
-            .wss = if (r.wss.len != 0) @constCast(r.wss[0..r.top_level_values]) else &.{},
-            .leading_ws = undefined,
-            .trailing_ws = undefined,
-        } };
-        component: while (it.next()) |component| {
-            switch (cur) {
-                .map => |map| for (map.keys, 0..) |k, i| {
-                    switch (k) {
+    fn findOne(component: []const u8, r: ParseResult, src: [:0]const u8, value: *const Value) !*const Value {
+        switch (value.*) {
+            inline .list, .vector, .set => |payload| {
+                const i = try std.fmt.parseInt(usize, component, 0);
+                return if (i < payload.values.len) &payload.values[i] else return error.PathNotFound;
+            },
+            .map => |map| {
+                for (map.keys, map.values) |*k, *v| {
+                    switch (k.*) {
                         .string,
                         .keyword,
                         .symbol,
-                        .float,
-                        => |t| if (mem.eql(u8, component, t.src(src))) {
-                            cur = map.values[i];
-                            continue :component;
-                        },
-                        .integer => |n| {
+                        => |t| if (mem.eql(u8, component, t.src(src))) return v,
+                        .integer => {
                             var buf: [std.math.log10(std.math.maxInt(i128)) + 1]u8 = undefined;
-                            const s = try std.fmt.bufPrint(&buf, "{}", .{n});
+                            const s = try std.fmt.bufPrint(&buf, "{}", .{k.formatter(src, r, value)});
                             if (mem.eql(u8, component, s)) {
-                                cur = map.values[i];
-                                continue :component;
+                                return v;
                             }
                         },
-                        .character => |n| {
-                            var buf: [std.math.log10(std.math.maxInt(u21)) + 1]u8 = undefined;
-                            const s = try std.fmt.bufPrint(&buf, "\\{u}", .{n});
+                        .character => {
+                            var buf: [std.math.log(usize, 2, std.math.maxInt(u21)) + 1]u8 = undefined;
+                            const s = try std.fmt.bufPrint(&buf, "{}", .{k.formatter(src, r, value)});
                             if (mem.eql(u8, component, s)) {
-                                cur = map.values[i];
-                                continue :component;
+                                return v;
                             }
                         },
-                        else => {},
+                        else => return error.PathNotFound,
                     }
-                },
-                else => {},
-            }
-
-            if (std.fmt.parseUnsigned(u32, component, 10)) |n| {
-                switch (cur) {
-                    .list => cur = try getList(cur.list.values, n),
-                    .vector => cur = try getList(cur.vector.values, n),
-                    .set => cur = try getList(cur.set.values, n),
-                    .map => cur = try getList(cur.map.values, n),
-                    else => return error.PathNotFound,
                 }
-                continue :component;
-            } else |_| {}
-
-            return error.PathNotFound;
+            },
+            else => unreachable,
         }
-        return cur;
+        return error.PathNotFound;
+    }
+
+    /// path: search components joined by double slashes ('//'). i.e. '0//1//foo'
+    pub fn find(r: ParseResult, path: []const u8, src: [:0]const u8) !*const Value {
+        var it = mem.splitSequence(u8, path, "//");
+        const component0 = it.next() orelse return error.InvalidPath;
+        const top_level_list = Value{
+            .list = .{
+                .values = @constCast(r.values[0..r.top_level_values]),
+                .wss = &.{},
+                .leading_ws = .{ 0, 0 },
+                .trailing_ws = .{ 0, 0 },
+            },
+        };
+
+        var cur = try findOne(component0, r, src, &top_level_list);
+        while (it.next()) |component| {
+            // std.debug.print("{s} {}\n", .{ component, cur.formatter(src, r, null) });
+            cur = try findOne(component, r, src, cur);
+        }
+        return if (it.next() != null) error.PathNotFound else cur;
     }
 
     pub fn formatter(
@@ -271,6 +288,11 @@ pub const Options = packed struct {
     /// ParseResult.wss.len will be 0 and all whitespace and comments will
     /// be replaced by a single space in fmtParseResult()
     whitespace: enum(u1) { include, exclude } = .include,
+    /// when set to something other than default value, line and column will
+    /// be populated on error and an error message with format
+    /// <file_path>:<line>:<column> will be printed to stderr.
+    /// user is responsible for setting Diagnostic.file_path.
+    diagnostic: *Diagnostic = @constCast(&Diagnostic.default),
 };
 
 pub const ParseMode = enum(u1) {
@@ -430,7 +452,7 @@ fn parseType(
                 );
             }
         }
-        return err(p, "no handler for tag '{s}'", .{tag.src(p.tokenizer.src)}, error.MissingHandler);
+        return err(p, "no handler for tag '{s}'", .{tag.src(p.tokenizer.src)}, error.MissingHandler, tag);
     }
 
     return switch (@typeInfo(T)) {
@@ -446,7 +468,7 @@ fn parseType(
                         return error.InvalidStructField;
                 },
                 else => {
-                    return err(p, "unexpected '{c}'", .{c}, error.InvalidUnion);
+                    return err(p, "unexpected '{c}'", .{c}, error.InvalidUnion, c);
                 },
             };
             debug("{s: <[1]}parseType union key {2s}", .{ "", p.depth * 2, @tagName(field) });
@@ -541,7 +563,7 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
                 break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.tokenizer.src)[1..]) orelse
                     return error.InvalidStructField;
             },
-            else => return err(p, "unexpected '{c}'", .{c}, error.InvalidStruct),
+            else => return err(p, "unexpected '{c}'", .{c}, error.InvalidStruct, c),
         };
         debug("{s: <[1]}parseStruct key {2s}", .{ "", p.depth * 2, @tagName(field) });
 
@@ -561,7 +583,7 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
                 @field(t, @tagName(tag)) = default;
                 seen_fields.insert(tag);
             } else {
-                err(p, "missing field '{s}'", .{@tagName(tag)}, error.MissingFields) catch {};
+                err(p, "missing field '{s}'", .{@tagName(tag)}, error.MissingFields, p.tokenizer.peek()) catch {};
             }
         },
     };
@@ -570,15 +592,14 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
 }
 
 fn formatParseResult(
-    data: struct { src: [:0]const u8, parse_result: ParseResult, parent: ?Value },
+    data: struct { src: [:0]const u8, parse_result: ParseResult, parent: ?*const Value },
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
-    for (data.parse_result.values[0..data.parse_result.top_level_values], 0..) |v, value_id| {
+    for (data.parse_result.values[0..data.parse_result.top_level_values]) |*v| {
         try formatValue(.{
             .value = v,
-            .value_id = @intCast(value_id),
             .src = data.src,
             .parse_result = data.parse_result,
             .parent = data.parent,
@@ -588,47 +609,28 @@ fn formatParseResult(
     try writer.writeAll(data.src[ws[0]..ws[1]]);
 }
 
-pub fn fmtValue(
-    value: Value,
-    value_id: u32,
-    src: [:0]const u8,
-    parse_result: ParseResult,
-    parent: ?Value,
-) std.fmt.Formatter(formatValue) {
-    return .{ .data = .{
-        .value = value,
-        .value_id = value_id,
-        .src = src,
-        .parse_result = parse_result,
-        .parent = parent,
-    } };
-}
-
 fn formatValue(
     data: struct {
-        value: Value,
-        /// the offset of value within parse_result.values
-        value_id: u32,
+        value: *const Value,
         src: [:0]const u8,
         parse_result: ParseResult,
-        parent: ?Value,
+        parent: ?*const Value,
     },
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
-    const v = data.value;
-
     const have_ws = data.parse_result.wss.len > 0;
     // print leading whitespace
+    const index = data.value - data.parse_result.values.ptr;
     if (have_ws) {
-        const ws = data.parse_result.wss[data.value_id];
+        const ws = data.parse_result.wss[index];
         try writer.writeAll(data.src[ws[0]..ws[1]]);
     } else if (data.parent == null) { // skip if inside list, vec, map or set. those are handled in loops below
         // print a single space between top level values except first one
-        try writer.writeAll(" "[0..@intFromBool(data.value_id > 0)]);
+        try writer.writeAll(" "[0..@intFromBool(index > 0)]);
     }
-
+    const v = data.value.*;
     switch (v) {
         .true,
         .false,
@@ -652,64 +654,50 @@ fn formatValue(
                 try writer.print("\\{u}", .{c}),
         },
         .integer => |x| try std.fmt.formatType(x, fmt, options, writer, 0),
-        .tagged => |tagged| {
+        .tagged => |*tagged| {
             const src = tagged.tag.src(data.src);
             try writer.writeAll(src);
             // FIXME - this hack allows '#foo 1' to print correctly instead of '#foo  1' when .whitespace = .exclude.
             if (!have_ws and (src.len == 0 or !std.ascii.isWhitespace(src[src.len - 1]))) {
                 try writer.writeByte(' ');
             }
-            const value_id: u32 = @intCast(tagged.value - data.parse_result.values.ptr);
-            try std.fmt.formatType(fmtValue(tagged.value.*, value_id, data.src, data.parse_result, data.parent), fmt, options, writer, 0);
+            try std.fmt.formatType(tagged.value.formatter(data.src, data.parse_result, data.parent), fmt, options, writer, 0);
         },
-        .list => |l| {
+        .list => |*l| {
             try writer.writeAll(data.src[l.leading_ws[0]..l.leading_ws[1]]);
             for (l.values, 0..) |*item, i| {
                 if (!have_ws and i > 0) try writer.writeByte(' ');
-                const value_id: u32 = @intCast(item - data.parse_result.values.ptr);
-                try std.fmt.formatType(fmtValue(item.*, value_id, data.src, data.parse_result, v), fmt, options, writer, 0);
+                try std.fmt.formatType(item.formatter(data.src, data.parse_result, data.value), fmt, options, writer, 0);
             }
             try writer.writeAll(data.src[l.trailing_ws[0]..l.trailing_ws[1]]);
         },
-        .vector => |l| {
+        .vector => |*l| {
             try writer.writeAll(data.src[l.leading_ws[0]..l.leading_ws[1]]);
             for (l.values, 0..) |*item, i| {
                 if (!have_ws and i > 0) try writer.writeByte(' ');
-                const value_id: u32 = @intCast(item - data.parse_result.values.ptr);
-                try std.fmt.formatType(fmtValue(item.*, value_id, data.src, data.parse_result, v), fmt, options, writer, 0);
+                try std.fmt.formatType(item.formatter(data.src, data.parse_result, data.value), fmt, options, writer, 0);
             }
             try writer.writeAll(data.src[l.trailing_ws[0]..l.trailing_ws[1]]);
         },
-        .map => |m| {
+        .map => |*m| {
             try writer.writeAll(data.src[m.leading_ws[0]..m.leading_ws[1]]);
             for (m.keys, m.values, 0..) |*k, *sv, i| {
                 if (!have_ws and i > 0) try writer.writeAll(" ");
-                const kvalue_id: u32 = @intCast(k - data.parse_result.values.ptr);
-                try std.fmt.formatType(fmtValue(k.*, kvalue_id, data.src, data.parse_result, v), fmt, options, writer, 0);
+                try std.fmt.formatType(k.formatter(data.src, data.parse_result, data.value), fmt, options, writer, 0);
                 if (!have_ws) try writer.writeByte(' ');
-                const vvalue_id: u32 = @intCast(sv - data.parse_result.values.ptr);
-                try std.fmt.formatType(fmtValue(sv.*, vvalue_id, data.src, data.parse_result, v), fmt, options, writer, 0);
+                try std.fmt.formatType(sv.formatter(data.src, data.parse_result, data.value), fmt, options, writer, 0);
             }
             try writer.writeAll(data.src[m.trailing_ws[0]..m.trailing_ws[1]]);
         },
-        .set => |set| {
+        .set => |*set| {
             try writer.writeAll(data.src[set.leading_ws[0]..set.leading_ws[1]]);
             for (set.values, 0..) |*k, i| {
                 if (!have_ws and i > 0) try writer.writeByte(' ');
-                const value_id: u32 = @intCast(k - data.parse_result.values.ptr);
-                try std.fmt.formatType(fmtValue(k.*, value_id, data.src, data.parse_result, v), fmt, options, writer, 0);
+                try std.fmt.formatType(k.formatter(data.src, data.parse_result, data.value), fmt, options, writer, 0);
             }
             try writer.writeAll(data.src[set.trailing_ws[0]..set.trailing_ws[1]]);
         },
     }
-}
-
-fn err(_: *const Parser, comptime fmt: []const u8, args: anytype, e: ParseError) ParseError {
-    if (@inComptime()) {
-        @compileError(std.fmt.comptimePrint(fmt, args));
-    } else if (!@import("builtin").is_test) log.err(fmt, args);
-    // TODO report error location as line/column
-    return e;
 }
 
 fn isSymChar(c: u8) bool {
@@ -1099,11 +1087,11 @@ fn parseValueInner(p: *Parser, t: Token, comptime mode: ParseMode) !Value {
         .lparen => .{ .list = try parseOrMeasureList(p, t, .lparen, mode) },
         .lbracket => .{ .vector = try parseOrMeasureList(p, t, .lbracket, mode) },
         .lbrace => .{ .map = try parseOrMeasureMap(p, t, mode) },
-        .rbrace => return error.EndOfMap,
+        .rbrace => return err(p, "EndOfMap", .{}, error.EndOfMap, t),
         .set => .{ .set = try parseOrMeasureSet(p, t, mode) },
-        .eof => return err(p, "unexpected end of file", .{}, error.Eof),
-        .invalid => return err(p, "invalid token '{s}'", .{t.src(p.tokenizer.src)}, error.InvalidToken),
-        .rparen, .rbracket => return err(p, "unexpected token '{s}'", .{@tagName(t.tag)}, error.InvalidToken),
+        .eof => return err(p, "unexpected end of file", .{}, error.Eof, t),
+        .invalid => return err(p, "invalid token '{s}'", .{t.src(p.tokenizer.src)}, error.InvalidToken, t),
+        .rparen, .rbracket => return err(p, "unexpected token '{s}'", .{@tagName(t.tag)}, error.InvalidToken, t),
     };
 }
 
@@ -1162,6 +1150,30 @@ fn parseValues(p: *Parser, comptime mode: ParseMode) ![2]u32 {
 }
 
 const log = std.log.scoped(.edn);
+
+pub fn err(p: *const Parser, comptime fmt: []const u8, args: anytype, e: ParseError, t: Token) ParseError {
+    if (@inComptime()) {
+        @compileError(std.fmt.comptimePrint(fmt, args));
+    } else if (!@import("builtin").is_test) {
+        if (p.options.diagnostic != &Diagnostic.default) { // user wants a diagnostic
+            p.options.diagnostic.* = .{ .line = 0, .column = 0 };
+            for (p.tokenizer.src[0..t.loc.start]) |c| {
+                if (c == '\n') {
+                    p.options.diagnostic.line += 1;
+                    p.options.diagnostic.column = 0;
+                } else {
+                    p.options.diagnostic.column += 1;
+                }
+            }
+            if (p.options.diagnostic.file_path) |file_path| {
+                std.debug.print("{s}:{}:{} " ++ fmt ++ "\n", .{ file_path, p.options.diagnostic.line, p.options.diagnostic.column } ++ args);
+            } else std.debug.print("{}:{} " ++ fmt ++ "\n", .{ p.options.diagnostic.line, p.options.diagnostic.column } ++ args);
+        } else {
+            std.debug.print(fmt ++ "\n", args);
+        }
+    }
+    return e;
+}
 
 fn debug(comptime fmt: []const u8, args: anytype) void {
     _ = fmt; // autofix

@@ -19,7 +19,7 @@ This library provides both runtime and compile-time parsing capabilities for EDN
   * parse arbitrary data with `edn.parseFromSliceComptime()`
   * parse structured data with `comptime edn.parseTypeFromSlice(T)`
 * formatting
-  * format parse results with `edn.fmtParseResult(parse_result, src)`
+  * format parse results with `parse_result.formatter(src)`
 
 #### Usage
 fetch with the package manager
@@ -44,19 +44,22 @@ exe.root_module.addImport("extensible-data-notation", edn_dep.module("extensible
 const edn = @import("extensible-data-notation");
 test "parseFromSliceAlloc demo" {
     const src = "a (a b c [1 2 3] {:a 1, :b 2})";
-    const result = try edn.parseFromSliceAlloc(std.testing.allocator, src, .{}, .{});
+    // on error line Diagnostic and column will be populated and an error
+    // message with format <file_path>:<line>:<column> will be printed to stderr.
+    var diag: edn.Diagnostic = .{ .file_path = "<test-file>" };
+    const result = try edn.parseFromSliceAlloc(std.testing.allocator, src, .{ .diagnostic = &diag }, .{});
     defer result.deinit(std.testing.allocator);
-    if (!@import("builtin").is_test) {
-        std.debug.print("{}\n", .{edn.fmtParseResult(result, src)});
+    if (!@import("builtin").is_test) { // format helper
+        std.debug.print("{}\n", .{result.formatter(src)});
     }
-    try std.testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+    try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
 ```
 ```zig
 test "parseFromSliceComptime demo" {
     const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
     const result = comptime try edn.parseFromSliceComptime(src, .{}, .{});
-    const src2 = std.fmt.comptimePrint("{}", .{comptime edn.fmtParseResult(result, src)});
+    const src2 = std.fmt.comptimePrint("{}", .{comptime result.formatter(src)});
     try std.testing.expectEqualStrings(src, src2);
 }
 ```
@@ -67,7 +70,7 @@ test "parseFromSliceBuf demo - runtime no allocation" {
     var values: [measured.capacity]edn.Value = undefined;
     var wss: [measured.capacity][2]u32 = undefined;
     const result = try edn.parseFromSliceBuf(src, measured, &values, &wss, .{}, .{});
-    try std.testing.expectFmt(src, "{}", .{edn.fmtParseResult(result, src)});
+    try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
 ```
 

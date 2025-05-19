@@ -200,47 +200,47 @@ test "exclude whitespace" {
 
 test "ParseResult find()" {
     const src =
-        \\(a b c {:a 1 :b 2 "foo" 3 ns/sym 4 5 5 \c 6})
+        \\(a b c {:a 1, :b 2, "foo" 3, ns/sym 4, 5 10, \c 6})
     ;
     const res = try edn.parseFromSliceAlloc(talloc, src, .{ .whitespace = .exclude }, .{});
     defer res.deinit(talloc);
     try testing.expectError(error.PathNotFound, res.find("1", src));
     try testing.expectError(error.PathNotFound, res.find("0//3//missing", src));
     {
-        const v = (try res.find("0", src)).?;
+        const v = (try res.find("0", src)).*;
         try testing.expectEqual(.list, std.meta.activeTag(v));
     }
     {
-        const v = (try res.find("0//0", src)).?;
+        const v = (try res.find("0//0", src)).*;
         try testing.expectEqual(.symbol, std.meta.activeTag(v));
     }
     {
-        const v = (try res.find("0//3//:a", src)).?;
+        const v = (try res.find("0//3//:a", src)).*;
         try testing.expectEqual(.integer, std.meta.activeTag(v));
         try testing.expectEqual(1, v.integer);
     }
     {
-        const v = (try res.find("0//3//:b", src)).?;
+        const v = (try res.find("0//3//:b", src)).*;
         try testing.expectEqual(.integer, std.meta.activeTag(v));
         try testing.expectEqual(2, v.integer);
     }
     {
-        const v = (try res.find("0//3//\"foo\"", src)).?;
+        const v = (try res.find("0//3//\"foo\"", src)).*;
         try testing.expectEqual(.integer, std.meta.activeTag(v));
         try testing.expectEqual(3, v.integer);
     }
     {
-        const v = (try res.find("0//3//ns/sym", src)).?;
+        const v = (try res.find("0//3//ns/sym", src)).*;
         try testing.expectEqual(.integer, std.meta.activeTag(v));
         try testing.expectEqual(4, v.integer);
     }
     { // 5 is an integer map key
-        const v = (try res.find("0//3//5", src)).?;
+        const v = (try res.find("0//3//5", src)).*;
         try testing.expectEqual(.integer, std.meta.activeTag(v));
-        try testing.expectEqual(5, v.integer);
+        try testing.expectEqual(10, v.integer);
     }
     {
-        const v = (try res.find("0//3//\\c", src)).?;
+        const v = (try res.find("0//3//\\c", src)).*;
         try testing.expectEqual(.integer, std.meta.activeTag(v));
         try testing.expectEqual(6, v.integer);
     }
@@ -870,7 +870,10 @@ test "tagged exclude ws format" {
 test "parseFromSliceAlloc demo" {
     // const edn = @import("extensible-data-notation");
     const src = "a (a b c [1 2 3] {:a 1, :b 2})";
-    const result = try edn.parseFromSliceAlloc(std.testing.allocator, src, .{}, .{});
+    // on error line Diagnostic and column will be populated and an error
+    // message with format <file_path>:<line>:<column> will be printed to stderr.
+    var diag: edn.Diagnostic = .{ .file_path = "<test-file>" };
+    const result = try edn.parseFromSliceAlloc(std.testing.allocator, src, .{ .diagnostic = &diag }, .{});
     defer result.deinit(std.testing.allocator);
     if (!@import("builtin").is_test) { // format helper
         std.debug.print("{}\n", .{result.formatter(src)});
@@ -895,7 +898,7 @@ test "parseFromSliceBuf demo - runtime no allocation" {
 }
 
 fn fuzzOne(src: [:0]const u8) !void {
-    std.debug.print("\n{s}\n{any}\n", .{ src, src });
+    // std.debug.print("\n{s}\n{any}\n", .{ src, src });
     {
         const result = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
         defer result.deinit(talloc);

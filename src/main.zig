@@ -14,7 +14,8 @@ pub fn main() !void {
     const file = try std.fs.cwd().openFile(args[1], .{});
     const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, .@"8", 0);
     defer alloc.free(src);
-    var result = try edn.parseFromSliceAlloc(alloc, src, .{}, .{});
+    var diag: edn.Diagnostic = .{ .file_path = args[1] };
+    var result = try edn.parseFromSliceAlloc(alloc, src, .{ .diagnostic = &diag }, .{});
     defer result.deinit(alloc);
     try std.io.getStdOut().writer().print("{}", .{result.formatter(src)});
 }
