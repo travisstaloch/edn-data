@@ -42,14 +42,16 @@ exe.root_module.addImport("extensible-data-notation", edn_dep.module("extensible
 ```zig
 // main.zig
 const edn = @import("extensible-data-notation");
-test "parseFromSliceAlloc demo" {
+test "parseFromSliceAlloc demo with Diagnostic" {
     const src = "a (a b c [1 2 3] {:a 1, :b 2})";
-    // on error line Diagnostic and column will be populated and an error
-    // message with format <file_path>:<line>:<column> will be printed to stderr.
+    // on error, Diagnostic line, column, and error_message will be populated.
     var diag: edn.Diagnostic = .{ .file_path = "<test-file>" };
-    const result = try edn.parseFromSliceAlloc(std.testing.allocator, src, .{ .diagnostic = &diag }, .{});
+    const result = edn.parseFromSliceAlloc(std.testing.allocator, src, .{ .diagnostic = &diag }, .{}) catch {
+        std.debug.print("{}:{} {s}\n", .{ diag.line, diag.column, diag.error_message });
+        return;
+    };
     defer result.deinit(std.testing.allocator);
-    if (!@import("builtin").is_test) { // format helper
+    if (!@import("builtin").is_test) { // use format helper
         std.debug.print("{}\n", .{result.formatter(src)});
     }
     try std.testing.expectFmt(src, "{}", .{result.formatter(src)});

@@ -33,8 +33,9 @@ pub const Diagnostic = struct {
     column: u32 = 0,
     /// user is responsible for setting file_path
     file_path: ?[]const u8 = null,
-
-    const default: Diagnostic = .{ .line = std.math.maxInt(u32), .column = std.math.maxInt(u32) };
+    /// on error, this will be populated
+    error_message: [256]u8 = [1]u8{0} ** 256,
+    // TODO user defined printFn which
 };
 
 pub const ValueList = struct {
@@ -288,11 +289,10 @@ pub const Options = packed struct {
     /// ParseResult.wss.len will be 0 and all whitespace and comments will
     /// be replaced by a single space in fmtParseResult()
     whitespace: enum(u1) { include, exclude } = .include,
-    /// when set to something other than default value, line and column will
-    /// be populated on error and an error message with format
-    /// <file_path>:<line>:<column> will be printed to stderr.
+    /// when set line and column will be populated on error and an error message
+    /// with format <file_path>:<line>:<column> will be printed to stderr.
     /// user is responsible for setting Diagnostic.file_path.
-    diagnostic: *Diagnostic = @constCast(&Diagnostic.default),
+    diagnostic: ?*Diagnostic = null,
 };
 
 pub const ParseMode = enum(u1) {
@@ -452,7 +452,7 @@ fn parseType(
                 );
             }
         }
-        return err(p, "no handler for tag '{s}'", .{tag.src(p.tokenizer.src)}, error.MissingHandler, tag);
+        return error.MissingHandler;
     }
 
     return switch (@typeInfo(T)) {
@@ -465,10 +465,10 @@ fn parseType(
                 .keyword => blk: {
                     const key = Value{ .keyword = c };
                     break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.tokenizer.src)[1..]) orelse
-                        return error.InvalidStructField;
+                        return err(p, "", .{}, error.InvalidStructField, c);
                 },
                 else => {
-                    return err(p, "unexpected '{c}'", .{c}, error.InvalidUnion, c);
+                    return err(p, "", .{}, error.InvalidUnion, c);
                 },
             };
             debug("{s: <[1]}parseType union key {2s}", .{ "", p.depth * 2, @tagName(field) });
@@ -479,7 +479,7 @@ fn parseType(
                     try parseType(@FieldType(T, @tagName(tag)), T, p),
                 ),
             };
-            if (consume(.rbrace, p) == null) return error.InvalidUnion;
+            if (consume(.rbrace, p) == null) return err(p, "", .{}, error.InvalidUnion, c);
             break :u u;
         },
         .bool => blk: {
@@ -496,7 +496,7 @@ fn parseType(
         },
         .float => blk: {
             const t = p.tokenizer.next();
-            if (t.tag != .float and t.tag != .int) return error.InvalidFloat;
+            if (t.tag != .float and t.tag != .int) return err(p, "", .{}, error.InvalidFloat, t);
             break :blk std.fmt.parseFloat(T, t.src(p.tokenizer.src));
         },
         .pointer => |i| blk: switch (i.size) {
@@ -563,7 +563,7 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
                 break :blk std.meta.stringToEnum(Fe, key.keyword.src(p.tokenizer.src)[1..]) orelse
                     return error.InvalidStructField;
             },
-            else => return err(p, "unexpected '{c}'", .{c}, error.InvalidStruct, c),
+            else => return err(p, "unexpected '{s}'", .{c.src(p.tokenizer.src)}, error.InvalidStruct, c),
         };
         debug("{s: <[1]}parseStruct key {2s}", .{ "", p.depth * 2, @tagName(field) });
 
@@ -587,7 +587,7 @@ fn parseStruct(comptime T: type, p: *Parser) !T {
             }
         },
     };
-    if (seen_fields.complement().count() != 0) return error.MissingFields;
+    if (seen_fields.complement().count() != 0) return err(p, "", .{}, error.MissingFields, p.tokenizer.peek());
     return t;
 }
 
@@ -1087,11 +1087,10 @@ fn parseValueInner(p: *Parser, t: Token, comptime mode: ParseMode) !Value {
         .lparen => .{ .list = try parseOrMeasureList(p, t, .lparen, mode) },
         .lbracket => .{ .vector = try parseOrMeasureList(p, t, .lbracket, mode) },
         .lbrace => .{ .map = try parseOrMeasureMap(p, t, mode) },
-        .rbrace => return err(p, "EndOfMap", .{}, error.EndOfMap, t),
+        .rbrace => return error.EndOfMap,
         .set => .{ .set = try parseOrMeasureSet(p, t, mode) },
-        .eof => return err(p, "unexpected end of file", .{}, error.Eof, t),
-        .invalid => return err(p, "invalid token '{s}'", .{t.src(p.tokenizer.src)}, error.InvalidToken, t),
-        .rparen, .rbracket => return err(p, "unexpected token '{s}'", .{@tagName(t.tag)}, error.InvalidToken, t),
+        .eof => return error.Eof,
+        .invalid, .rparen, .rbracket => return error.InvalidToken,
     };
 }
 
@@ -1152,25 +1151,20 @@ fn parseValues(p: *Parser, comptime mode: ParseMode) ![2]u32 {
 const log = std.log.scoped(.edn);
 
 pub fn err(p: *const Parser, comptime fmt: []const u8, args: anytype, e: ParseError, t: Token) ParseError {
-    if (@inComptime()) {
-        @compileError(std.fmt.comptimePrint(fmt, args));
-    } else if (!@import("builtin").is_test) {
-        if (p.options.diagnostic != &Diagnostic.default) { // user wants a diagnostic
-            p.options.diagnostic.* = .{ .line = 0, .column = 0 };
-            for (p.tokenizer.src[0..t.loc.start]) |c| {
-                if (c == '\n') {
-                    p.options.diagnostic.line += 1;
-                    p.options.diagnostic.column = 0;
-                } else {
-                    p.options.diagnostic.column += 1;
-                }
+    if (p.options.diagnostic) |diag| { // user wants a diagnostic
+        diag.* = .{ .line = 0, .column = 0 };
+        for (p.tokenizer.src[0..t.loc.start]) |c| {
+            if (c == '\n') {
+                diag.line += 1;
+                diag.column = 0;
+            } else {
+                diag.column += 1;
             }
-            if (p.options.diagnostic.file_path) |file_path| {
-                std.debug.print("{s}:{}:{} " ++ fmt ++ "\n", .{ file_path, p.options.diagnostic.line, p.options.diagnostic.column } ++ args);
-            } else std.debug.print("{}:{} " ++ fmt ++ "\n", .{ p.options.diagnostic.line, p.options.diagnostic.column } ++ args);
-        } else {
-            std.debug.print(fmt ++ "\n", args);
         }
+        var fbs = std.io.fixedBufferStream(&diag.error_message);
+        if (diag.file_path) |file_path| {
+            fbs.writer().print("{s}:{}:{} " ++ fmt ++ "\n", .{ file_path, diag.line, diag.column } ++ args) catch {};
+        } else fbs.writer().print("{}:{} " ++ fmt ++ "\n", .{ diag.line, diag.column } ++ args) catch {};
     }
     return e;
 }
