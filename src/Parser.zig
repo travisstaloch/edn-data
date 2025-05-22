@@ -1,13 +1,10 @@
 tokenizer: Tokenizer,
-values_start: [*]edn.Value,
-values: [*]edn.Value,
-/// whitespace locations start
-wss_start: [*][2]u32,
-/// whitespace locations
-wss: [*][2]u32,
-options: edn.Options,
+values: std.ArrayListUnmanaged(edn.Value),
+whitespaces: std.ArrayListUnmanaged([2]u32),
+// TODO use dynamic bitsets + shorter array list whichs to avoid storing nulls. i.e. SparseArrayHashMap
+first_child_ids: std.ArrayListUnmanaged(edn.ValueId),
+next_sibling_ids: std.ArrayListUnmanaged(edn.ValueId),
 depth: u8, // only used when logging
-measured: edn.Measured = .{},
 handlers: edn.TaggedElementHandler.Map,
 /// the last token seen.  used to track required whitespace between tokens.
 last_token: edn.Token = .{
@@ -19,22 +16,35 @@ const Parser = @This();
 
 pub fn init(
     src: [:0]const u8,
-    options: edn.Options,
-    values_start: [*]edn.Value,
-    values: [*]edn.Value,
-    wss_start: [*][2]u32,
-    wss: [*][2]u32,
     comptime handlers: []const edn.TaggedElementHandler.Data,
 ) !Parser {
     return .{
         .tokenizer = try .init(src),
         .depth = 0,
-        .options = options,
-        .values_start = values_start,
-        .values = values,
-        .wss_start = wss_start,
-        .wss = wss,
-        .handlers = edn.TaggedElementHandler.Map.initComptime(handlers),
+        .values = .{},
+        .whitespaces = .{},
+        .first_child_ids = .{},
+        .next_sibling_ids = .{},
+        .handlers = .initComptime(handlers),
+    };
+}
+
+pub fn initFixed(
+    src: [:0]const u8,
+    values: []edn.Value,
+    whitespaces: [][2]u32,
+    first_child_ids: []edn.ValueId,
+    next_sibling_ids: []edn.ValueId,
+    comptime handlers: []const edn.TaggedElementHandler.Data,
+) !Parser {
+    return .{
+        .tokenizer = try .init(src),
+        .depth = 0,
+        .values = .initBuffer(values),
+        .whitespaces = .initBuffer(whitespaces),
+        .first_child_ids = .initBuffer(first_child_ids),
+        .next_sibling_ids = .initBuffer(next_sibling_ids),
+        .handlers = .initComptime(handlers),
     };
 }
 

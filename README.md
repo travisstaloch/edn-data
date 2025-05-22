@@ -10,7 +10,7 @@ This library provides both runtime and compile-time parsing capabilities for EDN
 
 #### Features
 * parse arbitrary data with `edn.parseFromSliceAlloc()` or `edn.parseFromSliceBuf()`.  `edn.measure()` is used to determine required buffer sizes for `parseFromSliceBuf()`.
-  * `edn.Options.whitespace` - whether to save whitespace and comments.  `.exclude` is like minify and means that `ParseResult.wss.len` will be 0 and each merged whitespace/comment will be replaced by a single space in `fmtParseResult()`.
+  * `edn.Options.whitespace` - whether to save whitespace and comments.  false means to minify and that `ParseResult.whitespace.len` will be 0 and each merged whitespace/comment will be replaced by a single space in `fmtParseResult()`.
 * parse structured data with `edn.parseTypeFromSlice(T)`
   * custom parsing when `T` provides a  `pub fn ednParse()`.  see [src/tests.zig](src/tests.zig) `test "ednParse()"` for an example.
 * [tagged element](https://github.com/edn-format/edn#tagged-elements) handlers.  see [src/tests.zig](src/tests.zig) `test "tagged handler"` for an example.
@@ -46,9 +46,9 @@ test "parseFromSliceAlloc demo with Diagnostic" {
     const src = "a (a b c [1 2 3] {:a 1, :b 2})";
     // on error, Diagnostic line, column, and error_message will be populated.
     var diag: edn.Diagnostic = .{ .file_path = "<test-file>" };
-    const result = edn.parseFromSliceAlloc(std.testing.allocator, src, .{ .diagnostic = &diag }, .{}) catch {
-        std.debug.print("{}:{} {s}\n", .{ diag.line, diag.column, diag.error_message });
-        return;
+    const result = edn.parseFromSliceAlloc(std.testing.allocator, src, .{ .diagnostic = &diag }, .{}) catch |e| {
+        std.log.debug("{s}\n", .{diag.error_message});
+        return e;
     };
     defer result.deinit(std.testing.allocator);
     if (!@import("builtin").is_test) { // use format helper
@@ -56,22 +56,22 @@ test "parseFromSliceAlloc demo with Diagnostic" {
     }
     try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
-```
-```zig
+
 test "parseFromSliceComptime demo" {
     const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
-    const result = comptime try edn.parseFromSliceComptime(src, .{}, .{});
+    const result = comptime try edn.parseFromSliceComptime(src, .{}, .{ .eval_branch_quota = 2000 });
     const src2 = std.fmt.comptimePrint("{}", .{comptime result.formatter(src)});
     try std.testing.expectEqualStrings(src, src2);
 }
-```
-```zig
+
 test "parseFromSliceBuf demo - runtime no allocation" {
     const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
     const measured = comptime try edn.measure(src, .{}, .{}); // src must be comptime known here
     var values: [measured.capacity]edn.Value = undefined;
-    var wss: [measured.capacity][2]u32 = undefined;
-    const result = try edn.parseFromSliceBuf(src, measured, &values, &wss, .{}, .{});
+    var whitespace: [measured.capacity][2]u32 = undefined;
+    var children: [measured.capacity]edn.ValueId = undefined;
+    var siblings: [measured.capacity]edn.ValueId = undefined;
+    const result = try edn.parseFromSliceBuf(src, measured, &values, &whitespace, &children, &siblings, .{}, .{});
     try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
 ```
@@ -101,7 +101,9 @@ $ zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz -
 - [ ] maybe cannonical encoding/parsing - https://en.wikipedia.org/wiki/Canonical_S-expressions
 - [x] rework parser, use Tokenizer.zig
 - [ ] simplify parsing by using some kind of writer interface. goal is to replace `ParseMode = enum{measure, allocate}` with some writer where one writer does measuring while another allocates.  hopefully this remove lots of duplication such as `if(mode == .measure) something() else otherthing()`
-  - [ ] this would require to re-think how parse results are ordered.
+  - [x] this would require to re-think how parse results are ordered.
+    - [x] parse results are stored with the tree structure represented by first_child_ids and next_sibling_ids arrays.  
+      - [ ] this is quite a wasteful since most entries are empty. would be bettter as if it was a sparse array represented by a bitset and a full array.
 - [ ] api to parse from reader
   - [ ] option for duping strings.  currently we don't dupe anything.
 - [w] fix test "unclosed containers"
@@ -109,3 +111,7 @@ $ zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz -
 - [w] fuzz test the parser
   - [x] parseFromSliceAlloc, fmtParseResult
   - [x] expand fuzzing: parseTypeFromSlice
+- [ ] merge Parser and root.zig as Parser.zig. rename some redundant names such as ParseResult, ParseError.
+- [x] compresss parser code by reusing parseList to parse maps.
+- [x] store top level items in a list and reuse parseList again.
+- [x] merge ParseMode and some Parser fields into Options

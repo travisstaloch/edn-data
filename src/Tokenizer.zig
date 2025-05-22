@@ -21,7 +21,7 @@ pub const Token = struct {
         start: u32,
         end: u32,
 
-        pub const zero: Loc = .{ .start = 0, .end = 0 };
+        pub const zero: Loc = .{ .ws_start = 0, .start = 0, .end = 0 };
         pub fn src(loc: Loc, s: [:0]const u8) []const u8 {
             return s[loc.start..loc.end];
         }
@@ -44,16 +44,41 @@ pub const Token = struct {
         tagged, // '#'
         // opening tags - don't require trailing whitespace
         lparen, // '('
-        lbrace, // '{'
+        lcurly, // '{'
         lbracket, // '['
         set, // "#{"
         discard, // "#_"
         // closing tags - don't require leading whitespace
         rparen, // ')'
         rbracket, // ']'
-        rbrace, // '}'
+        rcurly, // '}'
         eof, // 0
         invalid,
+
+        pub fn lexeme(t: Tag) []const u8 {
+            return switch (t) {
+                .symbol => "symbol",
+                .int => "int",
+                .float => "float",
+                .keyword => "keyword",
+                .nil => "nil",
+                .true => "true",
+                .false => "false",
+                .str => "\"",
+                .char => "\\",
+                .tagged => "#",
+                .lparen => "(",
+                .lcurly => "{",
+                .lbracket => "[",
+                .set => "#{",
+                .discard => "#_",
+                .rparen => ")",
+                .rbracket => "]",
+                .rcurly => "}",
+                .eof => "0",
+                .invalid => "invalid",
+            };
+        }
 
         pub fn isOpening(tag: Tag) bool {
             return @intFromEnum(tag) >= @intFromEnum(Tag.lparen) and @intFromEnum(tag) < @intFromEnum(Tag.rparen);
@@ -143,8 +168,8 @@ fn nextInner(self: *Tokenizer) Token {
             ')' => self.tagInc(.rparen, 1, &result),
             '[' => self.tagInc(.lbracket, 1, &result),
             ']' => self.tagInc(.rbracket, 1, &result),
-            '{' => self.tagInc(.lbrace, 1, &result),
-            '}' => self.tagInc(.rbrace, 1, &result),
+            '{' => self.tagInc(.lcurly, 1, &result),
+            '}' => self.tagInc(.rcurly, 1, &result),
             '#' => switch (self.srcAt(1)) {
                 0, ' ', '\t', '\r', '\n', ',' => {
                     result.tag = .invalid;
@@ -525,10 +550,10 @@ test "basic" {
         \\#{:a :b 88 "huat"}
     , // zig fmt: off
     &.{ .lparen, .symbol, .symbol, .lbracket, .symbol, .symbol, .rbracket, .rparen, 
-        .lbrace, .keyword, .int, 
+        .lcurly, .keyword, .int, 
         .keyword, .float, 
-        .keyword, .int, .rbrace, 
-        .set, .keyword, .keyword, .int, .str, .rbrace,
+        .keyword, .int, .rcurly, 
+        .set, .keyword, .keyword, .int, .str, .rcurly,
         .eof }); // zig fmt: on
 }
 
@@ -607,7 +632,7 @@ test "discard" {
 test "containers" {
     try expectTokens(
         \\#{\space \u0}
-    , &.{ .set, .char, .char, .rbrace, .eof });
+    , &.{ .set, .char, .char, .rcurly, .eof });
 }
 
 test "complex example" {
@@ -639,8 +664,8 @@ test "complex example" {
         .char, .char, 
         .char, .char, .char,
         .keyword, .keyword, .invalid,
-        .lbrace, .keyword, .int, 
-        .keyword, .int, .rbrace, .eof,
+        .lcurly, .keyword, .int, 
+        .keyword, .int, .rcurly, .eof,
     }); // zig fmt: on
 }
 
@@ -726,18 +751,18 @@ test "edn.edn" {
         , .lbracket, .keyword, .int, .int, .int, .rbracket, .eof,
         \\; Maps are associative data structures that associate the key with its value
         \\{:eggs        2 :lemon-juice 3.5 :butter      1}
-        , .lbrace, .keyword, .int, .keyword, .float, .keyword, .int, .rbrace, .eof,
+        , .lcurly, .keyword, .int, .keyword, .float, .keyword, .int, .rcurly, .eof,
         \\; You're not restricted to using keywords as keys
         \\{[1 2 3 4] "tell the people what she wore", [5 6 7 8] "the more you see the more you hate"}
-        , .lbrace, .lbracket, .int, .int, .int, .int, .rbracket, 
+        , .lcurly, .lbracket, .int, .int, .int, .int, .rbracket, 
         .str, .lbracket, .int, .int, .int, .int, .rbracket, 
-        .str, .rbrace, .eof,
+        .str, .rcurly, .eof,
         \\; You may use commas for readability. They are treated as whitespace.
         \\,,,,,,
         , .eof,
         \\; Sets are collections that contain unique elements.
         \\#{:a :b 88 "huat"}
-        , .set, .keyword, .keyword, .int, .str, .rbrace, .eof,
+        , .set, .keyword, .keyword, .int, .str, .rcurly, .eof,
         \\;;;;;;;;;;;;;;;;;;;;;;;
         \\;;; Tagged Elements ;;;
         \\;;;;;;;;;;;;;;;;;;;;;;;
@@ -745,7 +770,7 @@ test "edn.edn" {
         , .eof,
         \\; EDN can be extended by tagging elements with # syms.
         \\#MyYelpClone/MenuItem {:name "eggs-benedict" :rating 10}
-        , .tagged, .lbrace, .keyword, .str, .keyword, .int, .rbrace, .eof,
+        , .tagged, .lcurly, .keyword, .str, .keyword, .int, .rcurly, .eof,
         \\; Let me explain this with a Clojure example. Suppose I want to transform that
         \\; piece of EDN into a MenuItem record.
         \\(defrecord MenuItem [name rating])
@@ -787,14 +812,14 @@ test "Tokenizer.edn" {
             .char, .char, .char, .char, .char, 
             .char, .char, .char, .char, .char, 
             .char, .char, .char,
-        .rbrace, .eof,
+        .rcurly, .eof,
 
         \\:SYMBOL     #{:edn/charset:a-zA-Z*!_?%&=.<>+ \- \/}
         \\:SYMBOL-1   #{:SYMBOL :edn/charset:0-9#:}
         , .keyword, .set, //4
-           .keyword, .char, .char, .rbrace, //10
+           .keyword, .char, .char, .rcurly, //10
         .keyword, .set, //14
-           .keyword, .keyword, .rbrace, //21
+           .keyword, .keyword, .rcurly, //21
         .eof,
 
         \\; asdf
@@ -803,40 +828,40 @@ test "Tokenizer.edn" {
         \\}
         , .keyword, .set, //6
             .keyword, .lparen, .char, .char, .rparen, .char, .char, //18
-        .rbrace, .eof,
+        .rcurly, .eof,
 
         \\:WS         #{\space \tab \return \newline \,}
-        , .keyword, .set, .char, .char, .char, .char, .char, .rbrace, .eof,
+        , .keyword, .set, .char, .char, .char, .char, .char, .rcurly, .eof,
         
         \\:DIGIT      #{:edn/charset:0-9}
-        , .keyword, .set, .keyword, .rbrace, .eof,
+        , .keyword, .set, .keyword, .rcurly, .eof,
         
         \\:DIGIT-1    #{:edn/charset:1-9}
-        , .keyword, .set, .keyword, .rbrace, .eof,
+        , .keyword, .set, .keyword, .rcurly, .eof,
         
         \\:WS-COMMENT (:WS \;) ; list is a union of character sets
         , .keyword, .lparen, .keyword, .char, .rparen, .eof,
         
         \\:KEYWORD    #{:edn/charset:a-zA-Z0-9*+!_?%&=<>. \- \/}
-        , .keyword, .set, .keyword, .char, .char, .rbrace, .eof,
+        , .keyword, .set, .keyword, .char, .char, .rcurly, .eof,
         
         \\:E          #{\e \E}
-        , .keyword, .set, .char, .char, .rbrace, .eof,
+        , .keyword, .set, .char, .char, .rcurly, .eof,
         
         \\:STR-ESC    #{\" \newline \tab \\ \return}
-        , .keyword, .set, .char, .char, .char, .char, .char, .rbrace, .eof,
+        , .keyword, .set, .char, .char, .char, .char, .char, .rcurly, .eof,
         
         \\; TODO
         \\:NUM_SUFFIX #{\N \M}
-        , .keyword, .set, .char, .char, .rbrace, .eof,
+        , .keyword, .set, .char, .char, .rcurly, .eof,
         
         \\; TODO
         \\; * string sets
         \\:SYMBOL-2   #{"nil" "true" "false"}
-        , .keyword, .set, .str, .str, .str, .rbrace, .eof,
+        , .keyword, .set, .str, .str, .str, .rcurly, .eof,
         
         \\:CHAR-NAMED #{"space" "newline" "tab" "return" "backspace" "formfeed"}
-        , .keyword, .set, .str, .str, .str, .str, .str, .str, .rbrace, .eof,
+        , .keyword, .set, .str, .str, .str, .str, .str, .str, .rcurly, .eof,
         
         // rest of file omitted        
     }); // zig fmt: on
@@ -906,20 +931,20 @@ test "jorinvo/edn-data tests" {
     // Collections
     try expectTokens("()", &.{ .lparen, .rparen, .eof });
     try expectTokens("[]", &.{ .lbracket, .rbracket, .eof });
-    try expectTokens("{}", &.{ .lbrace, .rbrace, .eof });
-    try expectTokens("#{}", &.{ .set, .rbrace, .eof });
+    try expectTokens("{}", &.{ .lcurly, .rcurly, .eof });
+    try expectTokens("#{}", &.{ .set, .rcurly, .eof });
 
     // Nested collections
     try expectTokens("([])", &.{ .lparen, .lbracket, .rbracket, .rparen, .eof });
     try expectTokens("[()]", &.{ .lbracket, .lparen, .rparen, .rbracket, .eof });
-    try expectTokens("{[]}", &.{ .lbrace, .lbracket, .rbracket, .rbrace, .eof });
-    try expectTokens("#{()}", &.{ .set, .lparen, .rparen, .rbrace, .eof });
+    try expectTokens("{[]}", &.{ .lcurly, .lbracket, .rbracket, .rcurly, .eof });
+    try expectTokens("#{()}", &.{ .set, .lparen, .rparen, .rcurly, .eof });
 
     // Collections with values
     try expectTokens("(1 2 3)", &.{ .lparen, .int, .int, .int, .rparen, .eof });
     try expectTokens("[1 2 3]", &.{ .lbracket, .int, .int, .int, .rbracket, .eof });
-    try expectTokens("{:a 1 :b 2}", &.{ .lbrace, .keyword, .int, .keyword, .int, .rbrace, .eof });
-    try expectTokens("#{1 2 3}", &.{ .set, .int, .int, .int, .rbrace, .eof });
+    try expectTokens("{:a 1 :b 2}", &.{ .lcurly, .keyword, .int, .keyword, .int, .rcurly, .eof });
+    try expectTokens("#{1 2 3}", &.{ .set, .int, .int, .int, .rcurly, .eof });
 
     // Comments
     try expectTokens(";; comment", &.{.eof});
@@ -945,8 +970,8 @@ test "jorinvo/edn-data tests" {
     try expectTokens(
         \\{:a 1, :b "hello", :c [1 2 3], :d #{:x :y}, :e nil, :f true, :g false}
     , &.{ // zig fmt: off
-        .lbrace, .keyword, .int, .keyword, .str, .keyword, .lbracket, .int, .int, .int, .rbracket, 
-        .keyword, .set, .keyword, .keyword, .rbrace, .keyword, .nil, .keyword, .true, .keyword, .false, .rbrace, .eof
+        .lcurly, .keyword, .int, .keyword, .str, .keyword, .lbracket, .int, .int, .int, .rbracket, 
+        .keyword, .set, .keyword, .keyword, .rcurly, .keyword, .nil, .keyword, .true, .keyword, .false, .rcurly, .eof
     }); // zig fmt: on
 
     try expectTokens(
@@ -974,8 +999,8 @@ test "jorinvo/edn-data tests" {
     try expectTokens(")", &.{ .rparen, .eof });
     try expectTokens("[", &.{ .lbracket, .eof });
     try expectTokens("]", &.{ .rbracket, .eof });
-    try expectTokens("{", &.{ .lbrace, .eof });
-    try expectTokens("}", &.{ .rbrace, .eof });
+    try expectTokens("{", &.{ .lcurly, .eof });
+    try expectTokens("}", &.{ .rcurly, .eof });
     try expectTokens("#{", &.{ .set, .eof });
 }
 
@@ -992,7 +1017,7 @@ test "tagged elements" {
     , &.{ // zig fmt: off
         .tagged, .str, 
         .tagged, .str, 
-        .tagged, .lbrace, .keyword, .int, .keyword, .int, .rbrace, 
+        .tagged, .lcurly, .keyword, .int, .keyword, .int, .rcurly,
         .tagged, .str, .eof
     }); // zig fmt: on
 }
@@ -1014,7 +1039,7 @@ test "nested collections" {
     try expectTokens(
         \\{:a {:b {:c [1 2 #{3 4}]}}}
     , &.{ // zig fmt: off
-        .lbrace, .keyword, .lbrace, .keyword, .lbrace, .keyword, .lbracket, .int, .int, .set, .int, .int, .rbrace, .rbracket, .rbrace, .rbrace, .rbrace, .eof
+        .lcurly, .keyword, .lcurly, .keyword, .lcurly, .keyword, .lbracket, .int, .int, .set, .int, .int, .rcurly, .rbracket, .rcurly, .rcurly, .rcurly, .eof
     }); // zig fmt: on
 }
 
