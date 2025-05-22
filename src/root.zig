@@ -340,7 +340,7 @@ pub const Options = struct {
     }
 };
 
-pub const Slices = struct {
+pub const Buffers = struct {
     values: []Value,
     whitespaces: []Span,
     children: []Value.Id,
@@ -353,14 +353,14 @@ const Shape = struct {
     /// total number of values found at top level
     top_level_values: u32 = 0,
 
-    pub inline fn Buffers(comptime s: Shape) type {
+    pub inline fn Arrays(comptime s: Shape) type {
         return struct {
             values: [s.capacity]Value,
             whitespace: [s.capacity]Span,
             children: [s.capacity]Value.Id,
             siblings: [s.capacity]Value.Id,
 
-            pub fn slices(arrays: *@This()) Slices {
+            pub fn buffers(arrays: *@This()) Buffers {
                 return .{
                     .values = &arrays.values,
                     .whitespaces = &arrays.whitespace,
@@ -390,16 +390,16 @@ pub fn measure(
 pub const Values = std.ArrayListUnmanaged(Value);
 pub const Whitespaces = std.ArrayListUnmanaged(Span);
 
-/// assumes that values and whitespaces are large enough to hold the parse results.
+/// assumes that slices are large enough to hold the parse results.
 /// users may call measure() to get the necessary sizes.
 pub fn parseFromSliceBuf(
     src: [:0]const u8,
     shape: Shape,
-    slices: Slices,
+    buffers: Buffers,
     options: Options,
     comptime comptime_options: ComptimeOptions,
 ) !Result {
-    var p = try Parser.initFixed(src, slices.values, slices.whitespaces, slices.children, slices.siblings, comptime_options.handlers);
+    var p = try Parser.initFixed(src, buffers, comptime_options.handlers);
     const id = storeValue(&p, .zero, .{ .list = .{} }, null, options);
     const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, id, options);
     if (options.allocate) p.res.items(.values, id).* = .{ .list = list };
@@ -476,8 +476,8 @@ pub inline fn parseFromSliceComptime(
         @setEvalBranchQuota(comptime_options.eval_branch_quota);
         const shape = try measure(src, options, comptime_options);
         debug("parseFromSliceComptime cap {}", .{shape.capacity});
-        var buffers: shape.Buffers() = undefined;
-        return try parseFromSliceBuf(src, shape, buffers.slices(), options, comptime_options);
+        var buffers: shape.Arrays() = undefined;
+        return try parseFromSliceBuf(src, shape, buffers.buffers(), options, comptime_options);
     }
 }
 
@@ -515,7 +515,7 @@ fn parseType(
         const tag = p.tokenizer.next();
 
         const tagged = p.tokenizer.next();
-        _, const next = try parseValue(p, tagged, null, options);
+        _, const next = try p.parseValue(tagged, null, options);
         if (P) |Parent| {
             comptime assert(isContainer(Parent));
             if (@hasDecl(Parent, "ednTagHandler")) {
@@ -890,10 +890,8 @@ fn parseList(
                 p.last_token = t;
                 return error.UnclosedContainer;
             }
-            _ = parseValue(p, t, parent, options) catch |e| switch (e) {
+            _ = p.parseValue(t, parent, options) catch |e| switch (e) {
                 error.EndOfMap, error.Eof => {
-                    // exit(p, t, &list);
-                    // if (true) unreachable;
                     list.trailing_ws = .{ t.loc.ws_start, t.loc.end };
                     p.last_token = t;
                     break :outer;
@@ -927,7 +925,7 @@ fn parseTagged(p: *Parser, t: Token, parent: Value.Id, options: Options) Error!V
     // no handler is present.
 
     const t2 = p.tokenizer.next();
-    const next_id, const next = try parseValue(p, t2, parent, options);
+    const next_id, const next = try p.parseValue(t2, parent, options);
     const v = if (p.handlers.get(t.src(p.tokenizer.src))) |handler| v: {
         const cur = p.tokenizer.peek();
         const v = try handler(
@@ -948,17 +946,13 @@ fn parseTagged(p: *Parser, t: Token, parent: Value.Id, options: Options) Error!V
 
 // TODO allow users to skip expensive parsing such as parsing integers
 pub fn userParseValue(p: *Parser, options: Options) !Value {
-    _, const val = try parseValue(p, p.tokenizer.next(), null, options);
+    _, const val = try p.parseValue(p.tokenizer.next(), null, options);
     return val;
 }
 
 fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) !struct { Value.Id, Value } {
     // std.debug.print("{s: <[1]}{2s}:\n  ws '{3s}'\n  content '{4s}'\n", .{ "", p.depth * 2, t.tag.lexeme(), p.tokenizer.src[t.loc.ws_start..t.loc.start], t.src(p.tokenizer.src) });
-    debug("{s: <[1]}parseValueInner('{2s}')", .{
-        "",
-        p.depth * 2,
-        t.src(p.tokenizer.src),
-    });
+    debug("{s: <[1]}parseValueInner('{2s}')", .{ "", p.depth * 2, t.src(p.tokenizer.src) });
     if (p.last_token.loc.end == t.loc.start and
         !t.tag.isClosing() and
         !p.last_token.tag.isOpening())
@@ -975,42 +969,42 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) !struct
         .int => .{ .integer = try std.fmt.parseInt(i128, t.src(p.tokenizer.src), 0) },
         .float => .{ .float = t },
         .str => .{ .string = t },
-        .char => try parseChar(p, t),
+        .char => try p.parseChar(t),
         .discard => {
             const t2 = p.tokenizer.next();
-            _, const discard = try parseValue(p, t2, parent, options.with(.{ .store = false }));
+            _, const discard = try p.parseValue(t2, parent, options.with(.{ .store = false }));
             debug("{s: <[1]}discarded {2s} '{3s}'", .{ "", p.depth * 2, @tagName(discard), t2.src(p.tokenizer.src) });
             // TODO merge tokens. include discard in whitespace somehow.  TODO add test for discard format
             const t3 = p.tokenizer.next();
-            return try parseValue(p, t3, parent, options);
+            return try p.parseValue(t3, parent, options);
         },
         .tagged => {
-            const id = storeValue(p, t.loc, .{ .tagged = undefined }, parent, options);
-            return .{ id, try parseTagged(p, t, id, options) };
+            const id = p.storeValue(t.loc, .{ .tagged = undefined }, parent, options);
+            return .{ id, try p.parseTagged(t, id, options) };
         },
         .keyword => .{ .keyword = t },
         .symbol => .{ .symbol = t },
         .lparen => {
-            const id = storeValue(p, ws, .{ .list = .{} }, parent, options);
-            const v = Value{ .list = try parseList(p, .rparen, &.{ .rbracket, .rcurly, .eof }, id, options) };
+            const id = p.storeValue(ws, .{ .list = .{} }, parent, options);
+            const v = Value{ .list = try p.parseList(.rparen, &.{ .rbracket, .rcurly, .eof }, id, options) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .lbracket => {
-            const id = storeValue(p, ws, .{ .vector = .{} }, parent, options);
-            const v = Value{ .vector = try parseList(p, .rbracket, &.{ .rparen, .rcurly, .eof }, id, options) };
+            const id = p.storeValue(ws, .{ .vector = .{} }, parent, options);
+            const v = Value{ .vector = try p.parseList(.rbracket, &.{ .rparen, .rcurly, .eof }, id, options) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .set => {
-            const id = storeValue(p, ws, .{ .set = .{} }, parent, options);
-            const v = Value{ .set = try parseList(p, .rcurly, &.{ .rparen, .rbracket, .eof }, id, options) };
+            const id = p.storeValue(ws, .{ .set = .{} }, parent, options);
+            const v = Value{ .set = try p.parseList(.rcurly, &.{ .rparen, .rbracket, .eof }, id, options) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .lcurly => {
-            const id = storeValue(p, ws, .{ .map = .{} }, parent, options);
-            const v = Value{ .map = try parseList(p, .rcurly, &.{ .rparen, .rbracket, .eof }, id, options.with(.{ .stride = 2 })) };
+            const id = p.storeValue(ws, .{ .map = .{} }, parent, options);
+            const v = Value{ .map = try p.parseList(.rcurly, &.{ .rparen, .rbracket, .eof }, id, options.with(.{ .stride = 2 })) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
@@ -1020,7 +1014,7 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) !struct
     };
 
     return .{
-        if (options.store) storeValue(p, t.loc, value, parent, options) else .from(p.res.values.items.len),
+        if (options.store) p.storeValue(t.loc, value, parent, options) else .from(p.res.values.items.len),
         value,
     };
 }
@@ -1057,23 +1051,6 @@ fn printDiagnostic(p: *const Parser, e: Error, t: Token, options: Options) void 
     }
 }
 
-const log = std.log.scoped(.edn);
-fn debug(comptime fmt: []const u8, args: anytype) void {
-    _ = fmt; // autofix
-    _ = args; // autofix
-    if (@inComptime()) {
-        // @compileLog(std.fmt.comptimePrint(fmt, args));
-    } else {
-        // log.debug(fmt, args);
-        // std.debug.print(fmt ++ "\n", args);
-    }
-}
-
-const assert = std.debug.assert;
-
-pub const Tokenizer = @import("Tokenizer.zig");
-
-pub const Parser = @This();
 tokenizer: Tokenizer,
 res: Result,
 depth: u8, // only used when logging
@@ -1098,25 +1075,38 @@ pub fn init(
 
 pub fn initFixed(
     src: [:0]const u8,
-    values: []Value,
-    whitespaces: []Span,
-    children: []Value.Id,
-    siblings: []Value.Id,
+    buffers: Buffers,
     comptime handlers: []const TaggedElementHandler.Data,
 ) !Parser {
     return .{
         .tokenizer = try .init(src),
         .depth = 0,
         .res = .{
-            .values = .initBuffer(values),
-            .whitespaces = .initBuffer(whitespaces),
-            .children = .initBuffer(children),
-            .siblings = .initBuffer(siblings),
+            .values = .initBuffer(buffers.values),
+            .whitespaces = .initBuffer(buffers.whitespaces),
+            .children = .initBuffer(buffers.children),
+            .siblings = .initBuffer(buffers.siblings),
         },
         .handlers = .initComptime(handlers),
     };
 }
 
+const log = std.log.scoped(.edn);
+fn debug(comptime fmt: []const u8, args: anytype) void {
+    _ = fmt; // autofix
+    _ = args; // autofix
+    if (@inComptime()) {
+        // @compileLog(std.fmt.comptimePrint(fmt, args));
+    } else {
+        // log.debug(fmt, args);
+        // std.debug.print(fmt ++ "\n", args);
+    }
+}
+
+pub const Tokenizer = @import("Tokenizer.zig");
+pub const Parser = @This();
+
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const assert = std.debug.assert;
