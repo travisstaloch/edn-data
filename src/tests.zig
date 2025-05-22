@@ -925,12 +925,9 @@ test "parseFromSliceComptime demo" {
 
 test "parseFromSliceBuf demo - runtime no allocation" {
     const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
-    const measured = comptime try edn.measure(src, .{}, .{}); // src must be comptime known here
-    var values: [measured.capacity]edn.Value = undefined;
-    var whitespace: [measured.capacity]edn.Span = undefined;
-    var children: [measured.capacity]edn.Value.Id = undefined;
-    var siblings: [measured.capacity]edn.Value.Id = undefined;
-    const result = try edn.parseFromSliceBuf(src, measured, &values, &whitespace, &children, &siblings, .{}, .{});
+    const shape = comptime try edn.measure(src, .{}, .{}); // src must be comptime known here
+    var buffers: shape.Buffers() = undefined;
+    const result = try edn.parseFromSliceBuf(src, shape, buffers.slices(), .{}, .{});
     try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
 
@@ -954,7 +951,6 @@ fn fuzzOne(src: [:0]const u8) !void {
 test "fuzz parseFromSliceAlloc and formatter" {
     const Context = struct {
         fn testOne(_: @This(), input: []const u8) anyerror!void {
-            std.debug.print("{s}\n", .{input});
             fuzzOne(@ptrCast(input)) catch |e| {
                 if (@import("builtin").is_test and !@import("builtin").fuzz) return;
                 // TODO log input to file

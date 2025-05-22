@@ -66,12 +66,9 @@ test "parseFromSliceComptime demo" {
 
 test "parseFromSliceBuf demo - runtime no allocation" {
     const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
-    const measured = comptime try edn.measure(src, .{}, .{}); // src must be comptime known here
-    var values: [measured.capacity]edn.Value = undefined;
-    var whitespace: [measured.capacity][2]u32 = undefined;
-    var children: [measured.capacity]edn.ValueId = undefined;
-    var siblings: [measured.capacity]edn.ValueId = undefined;
-    const result = try edn.parseFromSliceBuf(src, measured, &values, &whitespace, &children, &siblings, .{}, .{});
+    const shape = comptime try edn.measure(src, .{}, .{}); // src must be comptime known here
+    var buffers: shape.Buffers() = undefined;
+    const result = try edn.parseFromSliceBuf(src, shape, buffers.slices(), .{}, .{});
     try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
 ```
@@ -111,7 +108,7 @@ $ zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz -
 - [w] fuzz test the parser
   - [x] parseFromSliceAlloc, fmtParseResult
   - [x] expand fuzzing: parseTypeFromSlice
-- [ ] merge Parser and root.zig as Parser.zig. rename some redundant names such as ParseResult, ParseError.
+- [x] merge Parser and root.zig as Parser.zig. rename some redundant names such as ParseResult, ParseError.
 - [x] compresss parser code by reusing parseList to parse maps.
 - [x] store top level items in a list and reuse parseList again.
 - [x] merge ParseMode and some Parser fields into Options

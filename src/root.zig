@@ -194,22 +194,22 @@ pub const TaggedElementHandler = struct {
 pub const Result = struct {
     values: Values,
     whitespaces: Whitespaces,
-    first_child_ids: Value.Ids,
-    next_sibling_ids: Value.Ids,
+    children: Value.Ids,
+    siblings: Value.Ids,
 
     pub const init: Result = .{
         .values = .{},
         .whitespaces = .{},
-        .first_child_ids = .{},
-        .next_sibling_ids = .{},
+        .children = .{},
+        .siblings = .{},
     };
 
     pub fn deinit(r: Result, alloc: Allocator) void {
         const rr: *Result = @constCast(&r);
         rr.values.deinit(alloc);
         rr.whitespaces.deinit(alloc);
-        rr.first_child_ids.deinit(alloc);
-        rr.next_sibling_ids.deinit(alloc);
+        rr.children.deinit(alloc);
+        rr.siblings.deinit(alloc);
     }
 
     fn findOne(component: []const u8, r: *const Result, src: [:0]const u8, value: *const Value) !*const Value {
@@ -278,7 +278,7 @@ pub const Result = struct {
 
         pub fn next(iter: *Iterator) ?Value.Id {
             if (iter.id == Value.value_id_max) return null;
-            defer iter.id = iter.result.next_sibling_ids.items[iter.id];
+            defer iter.id = iter.result.siblings.items[iter.id];
             return iter.id;
         }
 
@@ -290,7 +290,7 @@ pub const Result = struct {
 
     /// visits each child of parent.  does not descend to grand children.
     pub fn iterator(result: *const Result, parent: *const Value) Iterator {
-        return .{ .result = result, .id = result.first_child_ids.items[parent - result.values.items.ptr] };
+        return .{ .result = result, .id = result.children.items[parent - result.values.items.ptr] };
     }
 
     pub fn firstValue(r: *const Result) *const Value {
@@ -327,11 +327,36 @@ pub const Options = struct {
     }
 };
 
+pub const Slices = struct {
+    values: []Value,
+    whitespaces: []Span,
+    children: []Value.Id,
+    siblings: []Value.Id,
+};
+
 const Shape = struct {
     /// total number of values in Result
     capacity: u32 = 0,
     /// total number of values found at top level
     top_level_values: u32 = 0,
+
+    pub inline fn Buffers(comptime s: Shape) type {
+        return struct {
+            values: [s.capacity]Value,
+            whitespace: [s.capacity]Span,
+            children: [s.capacity]Value.Id,
+            siblings: [s.capacity]Value.Id,
+
+            pub fn slices(arrays: *@This()) Slices {
+                return .{
+                    .values = &arrays.values,
+                    .whitespaces = &arrays.whitespace,
+                    .children = &arrays.children,
+                    .siblings = &arrays.siblings,
+                };
+            }
+        };
+    }
 };
 
 pub fn measure(
@@ -355,16 +380,13 @@ pub const Whitespaces = std.ArrayListUnmanaged(Span);
 pub fn parseFromSliceBuf(
     src: [:0]const u8,
     shape: Shape,
-    values: []Value,
-    whitespaces: []Span,
-    first_child_ids: []Value.Id,
-    next_sibling_ids: []Value.Id,
+    slices: Slices,
     options: Options,
     comptime comptime_options: ComptimeOptions,
 ) !Result {
-    var p = try Parser.initFixed(src, values, whitespaces, first_child_ids, next_sibling_ids, comptime_options.handlers);
+    var p = try Parser.initFixed(src, slices.values, slices.whitespaces, slices.children, slices.siblings, comptime_options.handlers);
     const id = storeValue(&p, .zero, .{ .list = .{} }, null, options);
-    const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, 0, options);
+    const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, id, options);
     if (options.allocate) p.res.values.items[id] = .{ .list = list };
 
     debug("shape.values {} parsed values count {} top level count {}", .{
@@ -383,8 +405,8 @@ pub fn parseFromSliceBuf(
             p.res.whitespaces
         else
             .{},
-        .first_child_ids = p.res.first_child_ids,
-        .next_sibling_ids = p.res.next_sibling_ids,
+        .children = p.res.children,
+        .siblings = p.res.siblings,
     };
 }
 
@@ -406,18 +428,20 @@ pub fn parseFromSliceAlloc(
     else
         &.{};
     errdefer alloc.free(whitespaces);
-    const first_child_ids = try alloc.alloc(Value.Id, shape.capacity);
-    errdefer alloc.free(first_child_ids);
-    const next_sibling_ids = try alloc.alloc(Value.Id, shape.capacity);
-    errdefer alloc.free(next_sibling_ids);
+    const children = try alloc.alloc(Value.Id, shape.capacity);
+    errdefer alloc.free(children);
+    const siblings = try alloc.alloc(Value.Id, shape.capacity);
+    errdefer alloc.free(siblings);
 
     return try parseFromSliceBuf(
         src,
         shape,
-        values,
-        whitespaces,
-        first_child_ids,
-        next_sibling_ids,
+        .{
+            .values = values,
+            .whitespaces = whitespaces,
+            .children = children,
+            .siblings = siblings,
+        },
         options,
         comptime_options,
     );
@@ -437,11 +461,8 @@ pub inline fn parseFromSliceComptime(
         @setEvalBranchQuota(comptime_options.eval_branch_quota);
         const shape = try measure(src, options, comptime_options);
         debug("parseFromSliceComptime cap {}", .{shape.capacity});
-        var values: [shape.capacity]Value = undefined;
-        var whitespaces: [shape.capacity]Span = undefined;
-        var first_child_ids: [shape.capacity]Value.Id = undefined;
-        var next_sibling_ids: [shape.capacity]Value.Id = undefined;
-        return try parseFromSliceBuf(src, shape, &values, &whitespaces, &first_child_ids, &next_sibling_ids, options, comptime_options);
+        var buffers: shape.Buffers() = undefined;
+        return try parseFromSliceBuf(src, shape, buffers.slices(), options, comptime_options);
     }
 }
 
@@ -777,28 +798,28 @@ fn storeValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options:
         debug("{s: <[1]}storeValue('{2s}') id {3}", .{ "", p.depth * 2, loc.src(p.tokenizer.src), id });
         p.res.values.appendAssumeCapacity(v);
         if (options.whitespace) p.res.whitespaces.appendAssumeCapacity(.{ loc.ws_start, loc.start });
-        p.res.first_child_ids.appendAssumeCapacity(Value.value_id_max);
-        p.res.next_sibling_ids.appendAssumeCapacity(Value.value_id_max);
+        p.res.children.appendAssumeCapacity(Value.value_id_max);
+        p.res.siblings.appendAssumeCapacity(Value.value_id_max);
         if (mparent) |parent| {
             const pv = &p.res.values.items[parent];
             switch (pv.*) {
                 inline .list, .vector, .set, .map => |_, tag| {
                     @field(pv, @tagName(tag)).len += 1;
                     // TODO maybe use an iterator.  TODO Parser.result field
-                    var child_id = p.res.first_child_ids.items[parent];
+                    var child_id = p.res.children.items[parent];
                     if (child_id == Value.value_id_max) {
                         // If parent has no children yet, this is the first child
-                        p.res.first_child_ids.items[parent] = id;
+                        p.res.children.items[parent] = id;
                     } else {
                         // Otherwise, find the last sibling and update its next_sibling
-                        while (p.res.next_sibling_ids.items[child_id] != Value.value_id_max)
-                            child_id = p.res.next_sibling_ids.items[child_id];
-                        p.res.next_sibling_ids.items[child_id] = id;
+                        while (p.res.siblings.items[child_id] != Value.value_id_max)
+                            child_id = p.res.siblings.items[child_id];
+                        p.res.siblings.items[child_id] = id;
                     }
                 },
                 .tagged => {
-                    assert(p.res.first_child_ids.items[parent] == Value.value_id_max);
-                    p.res.first_child_ids.items[parent] = id;
+                    assert(p.res.children.items[parent] == Value.value_id_max);
+                    p.res.children.items[parent] = id;
                 },
 
                 else => unreachable,
@@ -807,13 +828,13 @@ fn storeValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options:
     } else {
         p.res.values.items.len += 1;
         p.res.whitespaces.items.len += 1;
-        p.res.first_child_ids.items.len += 1;
-        p.res.next_sibling_ids.items.len += 1;
+        p.res.children.items.len += 1;
+        p.res.siblings.items.len += 1;
     }
     if (options.whitespace) assert(p.res.values.items.len == p.res.whitespaces.items.len);
 
-    assert(p.res.values.items.len == p.res.first_child_ids.items.len);
-    assert(p.res.values.items.len == p.res.next_sibling_ids.items.len);
+    assert(p.res.values.items.len == p.res.children.items.len);
+    assert(p.res.values.items.len == p.res.siblings.items.len);
     return id;
 }
 
@@ -1064,8 +1085,8 @@ pub fn initFixed(
     src: [:0]const u8,
     values: []Value,
     whitespaces: []Span,
-    first_child_ids: []Value.Id,
-    next_sibling_ids: []Value.Id,
+    children: []Value.Id,
+    siblings: []Value.Id,
     comptime handlers: []const TaggedElementHandler.Data,
 ) !Parser {
     return .{
@@ -1074,8 +1095,8 @@ pub fn initFixed(
         .res = .{
             .values = .initBuffer(values),
             .whitespaces = .initBuffer(whitespaces),
-            .first_child_ids = .initBuffer(first_child_ids),
-            .next_sibling_ids = .initBuffer(next_sibling_ids),
+            .children = .initBuffer(children),
+            .siblings = .initBuffer(siblings),
         },
         .handlers = .initComptime(handlers),
     };
