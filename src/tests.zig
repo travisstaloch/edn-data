@@ -884,16 +884,31 @@ test "Tokenizer.edn" {
 }
 
 test "unclosed containers" {
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "{"));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "#{"));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "("));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "["));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "{)"));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "{]"));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "#{)"));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "#{]"));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "(}"));
-    try testing.expectError(error.UnclosedContainer, testParse(talloc, "[}"));
+    for (&[_][:0]const u8{
+        "{",
+        "#{",
+        "(",
+        "[",
+        "{)",
+        "{]",
+        "#{)",
+        "#{]",
+        "(}",
+        "[}",
+        "{[",
+        "([",
+        "[{",
+        "{:a 1",
+        "(1 2 3",
+        "[1 2 3",
+        "#{1 2 3",
+        "{[])",
+        "([]}",
+        "#tag {",
+        "#_ {",
+    }) |s| {
+        try testing.expectError(error.UnclosedContainer, testParse(talloc, s));
+    }
 }
 
 test "tagged exclude ws format" {

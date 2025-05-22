@@ -103,8 +103,8 @@ $ zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz -
       - [ ] this is quite a wasteful since most entries are empty. would be bettter as if it was a sparse array represented by a bitset and a full array.
 - [ ] api to parse from reader
   - [ ] option for duping strings.  currently we don't dupe anything.
-- [w] fix test "unclosed containers"
-  - [ ] add more "unclosed containers" test cases
+- [x] fix test "unclosed containers"
+  - [x] add more "unclosed containers" test cases
 - [w] fuzz test the parser
   - [x] parseFromSliceAlloc, fmtParseResult
   - [x] expand fuzzing: parseTypeFromSlice
