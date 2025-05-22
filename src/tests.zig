@@ -345,7 +345,7 @@ test "tagged handler" {
             value_src: []const u8,
             whole_src: []const u8,
             userdata: ?*anyopaque,
-        ) edn.ParseError!edn.Value {
+        ) edn.Error!edn.Value {
             _ = whole_src;
             _ = value;
             std.debug.assert(std.mem.eql(u8, value_src, datasrc));
@@ -378,7 +378,7 @@ test "tagged handler" {
             whole_src: []const u8,
             value: edn.Value,
             userdata: ?*anyopaque,
-        ) edn.ParseError!T {
+        ) edn.Error!T {
             _ = whole_src;
             _ = value_src;
             _ = value;
@@ -424,7 +424,7 @@ const Expectation = union(edn.Value.Tag) {
     map: []const [2]Expectation,
 };
 
-fn expectOne(ex: Expectation, actual: *const edn.Value, src: [:0]const u8, parse_result: *const edn.ParseResult) !void {
+fn expectOne(ex: Expectation, actual: *const edn.Value, src: [:0]const u8, result: *const edn.Result) !void {
     try testing.expectEqualStrings(@tagName(ex), @tagName(actual.*));
     switch (actual.*) {
         inline .string,
@@ -443,28 +443,28 @@ fn expectOne(ex: Expectation, actual: *const edn.Value, src: [:0]const u8, parse
         inline .vector, .list, .set => |v, tag| {
             const ex_payload = @field(ex, @tagName(tag));
             try testing.expectEqual(ex_payload.len, v.len);
-            var iter = parse_result.iterator(actual);
+            var iter = result.iterator(actual);
             for (ex_payload) |e| {
                 const a = iter.next().?;
-                try expectOne(e, &parse_result.values.items[a], src, parse_result);
+                try expectOne(e, &result.values.items[a], src, result);
             }
             try testing.expectEqual(null, iter.next());
         },
         .map => |v| {
             try testing.expectEqual(ex.map.len, v.len);
-            var iter = parse_result.iterator(actual);
+            var iter = result.iterator(actual);
             // std.debug.print("actual {}\n", .{actual.*});
             for (ex.map) |e| {
                 // std.debug.print("{}\n", .{e[0]});
-                try expectOne(e[0], &parse_result.values.items[iter.next().?], src, parse_result);
+                try expectOne(e[0], &result.values.items[iter.next().?], src, result);
                 // std.debug.print("{}\n", .{e[1]});
-                try expectOne(e[1], &parse_result.values.items[iter.next().?], src, parse_result);
+                try expectOne(e[1], &result.values.items[iter.next().?], src, result);
             }
             try testing.expectEqual(null, iter.next());
         },
         .tagged => |tagged| {
             try testing.expectEqualStrings(ex.tagged[0], tagged.tag.src(src));
-            try expectOne(ex.tagged[1].*, tagged.value, src, parse_result);
+            try expectOne(ex.tagged[1].*, tagged.value, src, result);
         },
         // else => std.debug.panic("TODO {s}", .{@tagName(actual.*)}),
     }
@@ -557,6 +557,7 @@ test "string parsing" {
     try testing.expectError(error.InvalidToken, expect("\"", &.{}));
     try testing.expectError(error.InvalidToken, expect("\"\\", &.{}));
     try testing.expectError(error.InvalidToken, expect("\"\\\\", &.{}));
+    try testing.expectError(error.InvalidToken, expect("s\x13mbol", &.{}));
     try testing.expectError(error.MissingWhitespaceBetweenValues, expect(
         \\"\\"""
     , &.{}));
@@ -849,7 +850,7 @@ test "ednParse()" {
     var userdata1: u8 = 0;
     const T = struct {
         a: u8,
-        pub fn ednParse(p: *edn.Parser, userdata: ?*anyopaque, options: edn.Options) edn.ParseError!@This() {
+        pub fn ednParse(p: *edn.Parser, userdata: ?*anyopaque, options: edn.Options) edn.Error!@This() {
             const data: *u8 = @ptrCast(userdata orelse unreachable);
             data.* = 10;
 
@@ -926,9 +927,9 @@ test "parseFromSliceBuf demo - runtime no allocation" {
     const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
     const measured = comptime try edn.measure(src, .{}, .{}); // src must be comptime known here
     var values: [measured.capacity]edn.Value = undefined;
-    var whitespace: [measured.capacity][2]u32 = undefined;
-    var children: [measured.capacity]edn.ValueId = undefined;
-    var siblings: [measured.capacity]edn.ValueId = undefined;
+    var whitespace: [measured.capacity]edn.Span = undefined;
+    var children: [measured.capacity]edn.Value.Id = undefined;
+    var siblings: [measured.capacity]edn.Value.Id = undefined;
     const result = try edn.parseFromSliceBuf(src, measured, &values, &whitespace, &children, &siblings, .{}, .{});
     try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
@@ -953,12 +954,13 @@ fn fuzzOne(src: [:0]const u8) !void {
 test "fuzz parseFromSliceAlloc and formatter" {
     const Context = struct {
         fn testOne(_: @This(), input: []const u8) anyerror!void {
+            std.debug.print("{s}\n", .{input});
             fuzzOne(@ptrCast(input)) catch |e| {
-                if (@import("builtin").is_test) return;
+                if (@import("builtin").is_test and !@import("builtin").fuzz) return;
                 // TODO log input to file
                 std.debug.print("{s}\n", .{@errorName(e)});
-                std.debug.print("{s}\n", .{input});
-                std.debug.print("{any}\n", .{input});
+                // std.debug.print("{s}\n", .{input});
+                // std.debug.print("{any}\n", .{input});
                 return;
             };
         }

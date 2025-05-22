@@ -1,6 +1,6 @@
 //! https://github.com/edn-format/edn
 
-pub const ParseError = error{
+pub const Error = error{
     Parse,
     Eof,
     HandlerParse,
@@ -38,14 +38,7 @@ pub const Diagnostic = struct {
     // TODO user defined printFn?
 };
 
-pub const ValueId = usize; // TODO use enum
-pub const value_id_max = std.math.maxInt(ValueId); // TODO delete. replace with enum field.
-pub const ValueIds = std.ArrayListUnmanaged(ValueId);
-
-pub const ValueList = struct {
-    len: u32 = 0,
-    trailing_ws: [2]u32 = .{ 0, 0 },
-};
+pub const Span = [2]u32;
 
 pub const Value = union(Value.Tag) {
     nil,
@@ -58,10 +51,10 @@ pub const Value = union(Value.Tag) {
     tagged: struct { tag: Token, value: *Value },
     integer: i128,
     float: Token,
-    list: ValueList,
-    vector: ValueList,
-    set: ValueList,
-    map: ValueList,
+    list: List,
+    vector: List,
+    set: List,
+    map: List,
 
     pub const Tag = enum(u8) {
         nil,
@@ -81,13 +74,22 @@ pub const Value = union(Value.Tag) {
         map,
     };
 
+    pub const List = struct {
+        len: u32 = 0,
+        trailing_ws: Span = .{ 0, 0 },
+    };
+
+    pub const Id = usize; // TODO use enum
+    pub const Ids = std.ArrayListUnmanaged(Id);
+    pub const value_id_max = std.math.maxInt(Id); // TODO delete. replace with enum field.
+
     pub fn eql(
         a: *const Value,
         a_src: [:0]const u8,
-        a_result: *const ParseResult,
+        a_result: *const Result,
         b: *const Value,
         b_src: [:0]const u8,
-        b_result: *const ParseResult,
+        b_result: *const Result,
     ) bool {
         return a.* == std.meta.activeTag(b.*) and
             switch (a.*) {
@@ -122,22 +124,22 @@ pub const Value = union(Value.Tag) {
             };
     }
 
-    pub fn formatter(value: *const Value, src: [:0]const u8, parse_result: *const ParseResult) std.fmt.Formatter(formatValue) {
-        return .{ .data = .{ .value = value, .src = src, .parse_result = parse_result } };
+    pub fn formatter(value: *const Value, src: [:0]const u8, result: *const Result) std.fmt.Formatter(formatValue) {
+        return .{ .data = .{ .value = value, .src = src, .result = result } };
     }
 
     pub fn isContainer(v: Value) bool {
         return @intFromEnum(@as(Tag, v)) >= @intFromEnum(Tag.list);
     }
 
-    pub fn listAt(v: *const Value, index: usize, result: *const ParseResult) *const Value {
+    pub fn listAt(v: *const Value, index: usize, result: *const Result) *const Value {
         return &result.values.items[v - result.values.items.ptr + index];
     }
 };
 
 pub const MapContext = struct {
     src: [:0]const u8,
-    result: *const ParseResult,
+    result: *const Result,
 
     fn hashValue(self: MapContext, v: *const Value, hptr: anytype) void {
         hptr.update(mem.asBytes(&@intFromEnum(v.*)));
@@ -180,7 +182,7 @@ pub const TaggedElementHandler = struct {
         value_src: []const u8,
         src: [:0]const u8,
         userdata: ?*anyopaque,
-    ) ParseError!Value;
+    ) Error!Value;
 
     /// initialization format: {tag_name, handler_fn}.
     /// tag_name must include leading '#'.
@@ -189,21 +191,28 @@ pub const TaggedElementHandler = struct {
     pub const Map = std.StaticStringMap(Fn);
 };
 
-pub const ParseResult = struct {
+pub const Result = struct {
     values: Values,
     whitespaces: Whitespaces,
-    first_child_ids: ValueIds,
-    next_sibling_ids: ValueIds,
+    first_child_ids: Value.Ids,
+    next_sibling_ids: Value.Ids,
 
-    pub fn deinit(r: ParseResult, alloc: Allocator) void {
-        const rr: *ParseResult = @constCast(&r);
+    pub const init: Result = .{
+        .values = .{},
+        .whitespaces = .{},
+        .first_child_ids = .{},
+        .next_sibling_ids = .{},
+    };
+
+    pub fn deinit(r: Result, alloc: Allocator) void {
+        const rr: *Result = @constCast(&r);
         rr.values.deinit(alloc);
         rr.whitespaces.deinit(alloc);
         rr.first_child_ids.deinit(alloc);
         rr.next_sibling_ids.deinit(alloc);
     }
 
-    fn findOne(component: []const u8, r: *const ParseResult, src: [:0]const u8, value: *const Value) !*const Value {
+    fn findOne(component: []const u8, r: *const Result, src: [:0]const u8, value: *const Value) !*const Value {
         switch (value.*) {
             inline .list, .vector, .set => |payload| {
                 const i = try std.fmt.parseInt(usize, component, 0);
@@ -249,7 +258,7 @@ pub const ParseResult = struct {
     }
 
     /// path: search components joined by double slashes ('//'). i.e. '0//1//foo'
-    pub fn find(r: *const ParseResult, path: []const u8, src: [:0]const u8) !*const Value {
+    pub fn find(r: *const Result, path: []const u8, src: [:0]const u8) !*const Value {
         var it = mem.splitSequence(u8, path, "//");
         const component0 = it.next() orelse return error.InvalidPath;
         var cur = try findOne(component0, r, src, &r.values.items[0]);
@@ -259,32 +268,32 @@ pub const ParseResult = struct {
         return if (it.next() != null) error.PathNotFound else cur;
     }
 
-    pub fn formatter(parse_result: *const ParseResult, src: [:0]const u8) std.fmt.Formatter(formatParseResult) {
-        return .{ .data = .{ .src = src, .parse_result = parse_result } };
+    pub fn formatter(result: *const Result, src: [:0]const u8) std.fmt.Formatter(formatParseResult) {
+        return .{ .data = .{ .src = src, .result = result } };
     }
 
     pub const Iterator = struct {
-        parse_result: *const ParseResult,
-        id: ValueId,
+        result: *const Result,
+        id: Value.Id,
 
-        pub fn next(iter: *Iterator) ?ValueId {
-            if (iter.id == value_id_max) return null;
-            defer iter.id = iter.parse_result.next_sibling_ids.items[iter.id];
+        pub fn next(iter: *Iterator) ?Value.Id {
+            if (iter.id == Value.value_id_max) return null;
+            defer iter.id = iter.result.next_sibling_ids.items[iter.id];
             return iter.id;
         }
 
-        pub fn nth(iter: *Iterator, n: usize) ?ValueId {
+        pub fn nth(iter: *Iterator, n: usize) ?Value.Id {
             for (1..n) |_| _ = iter.next();
             return iter.next();
         }
     };
 
     /// visits each child of parent.  does not descend to grand children.
-    pub fn iterator(parse_result: *const ParseResult, parent: *const Value) Iterator {
-        return .{ .parse_result = parse_result, .id = parse_result.first_child_ids.items[parent - parse_result.values.items.ptr] };
+    pub fn iterator(result: *const Result, parent: *const Value) Iterator {
+        return .{ .result = result, .id = result.first_child_ids.items[parent - result.values.items.ptr] };
     }
 
-    pub fn firstValue(r: *const ParseResult) *const Value {
+    pub fn firstValue(r: *const Result) *const Value {
         return &r.values.items[1];
     }
 };
@@ -318,8 +327,8 @@ pub const Options = struct {
     }
 };
 
-pub const Measured = struct {
-    /// total number of values found during parsing
+const Shape = struct {
+    /// total number of values in Result
     capacity: u32 = 0,
     /// total number of values found at top level
     top_level_values: u32 = 0,
@@ -329,52 +338,53 @@ pub fn measure(
     src: [:0]const u8,
     options: Options,
     comptime comptime_options: ComptimeOptions,
-) !Measured {
+) !Shape {
     var p = try Parser.init(src, comptime_options.handlers);
     const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, 0, options.with(.{ .allocate = false }));
     return .{
-        .capacity = @intCast(p.values.items.len + 1),
+        .capacity = @intCast(p.res.values.items.len + 1),
         .top_level_values = @intCast(list.len),
     };
 }
 
 pub const Values = std.ArrayListUnmanaged(Value);
-pub const Whitespaces = std.ArrayListUnmanaged([2]u32);
+pub const Whitespaces = std.ArrayListUnmanaged(Span);
 
 /// assumes that values and whitespaces are large enough to hold the parse results.
 /// users may call measure() to get the necessary sizes.
 pub fn parseFromSliceBuf(
     src: [:0]const u8,
-    measured: Measured,
+    shape: Shape,
     values: []Value,
-    whitespaces: [][2]u32,
-    first_child_ids: []ValueId,
-    next_sibling_ids: []ValueId,
+    whitespaces: []Span,
+    first_child_ids: []Value.Id,
+    next_sibling_ids: []Value.Id,
     options: Options,
     comptime comptime_options: ComptimeOptions,
-) !ParseResult {
+) !Result {
     var p = try Parser.initFixed(src, values, whitespaces, first_child_ids, next_sibling_ids, comptime_options.handlers);
     const id = storeValue(&p, .zero, .{ .list = .{} }, null, options);
     const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, 0, options);
-    if (options.allocate) p.values.items[id] = .{ .list = list };
+    if (options.allocate) p.res.values.items[id] = .{ .list = list };
 
-    debug("measured.values {} parsed values count {} top level count {}", .{
-        measured.capacity,
-        p.values.items.len,
+    debug("shape.values {} parsed values count {} top level count {}", .{
+        shape.capacity,
+        p.res.values.items.len,
         list.len,
     });
 
     // TODO remove this after early catching when a container isn't closed.  currently errors on unclosed map
     if (p.depth != 0) return error.UnclosedContainer;
+    if (p.tokenizer.index != 0 and p.tokenizer.peek().tag != .eof) return error.IncompleteParse;
 
     return .{
-        .values = p.values,
+        .values = p.res.values,
         .whitespaces = if (options.whitespace)
-            p.whitespaces
+            p.res.whitespaces
         else
             .{},
-        .first_child_ids = p.first_child_ids,
-        .next_sibling_ids = p.next_sibling_ids,
+        .first_child_ids = p.res.first_child_ids,
+        .next_sibling_ids = p.res.next_sibling_ids,
     };
 }
 
@@ -386,24 +396,24 @@ pub fn parseFromSliceAlloc(
     src: [:0]const u8,
     options: Options,
     comptime comptime_options: ComptimeOptions,
-) !ParseResult {
-    const measured = try measure(src, options, comptime_options);
+) !Result {
+    const shape = try measure(src, options, comptime_options);
 
-    const values = try alloc.alloc(Value, measured.capacity);
+    const values = try alloc.alloc(Value, shape.capacity);
     errdefer alloc.free(values);
-    const whitespaces: [][2]u32 = if (options.whitespace)
-        try alloc.alloc([2]u32, measured.capacity)
+    const whitespaces: []Span = if (options.whitespace)
+        try alloc.alloc(Span, shape.capacity)
     else
         &.{};
     errdefer alloc.free(whitespaces);
-    const first_child_ids = try alloc.alloc(ValueId, measured.capacity);
+    const first_child_ids = try alloc.alloc(Value.Id, shape.capacity);
     errdefer alloc.free(first_child_ids);
-    const next_sibling_ids = try alloc.alloc(ValueId, measured.capacity);
+    const next_sibling_ids = try alloc.alloc(Value.Id, shape.capacity);
     errdefer alloc.free(next_sibling_ids);
 
     return try parseFromSliceBuf(
         src,
-        measured,
+        shape,
         values,
         whitespaces,
         first_child_ids,
@@ -422,16 +432,16 @@ pub inline fn parseFromSliceComptime(
     comptime src: [:0]const u8,
     comptime options: Options,
     comptime comptime_options: ComptimeOptions,
-) !ParseResult {
+) !Result {
     comptime {
         @setEvalBranchQuota(comptime_options.eval_branch_quota);
-        const measured = try measure(src, options, comptime_options);
-        debug("parseFromSliceComptime cap {}", .{measured.capacity});
-        var values: [measured.capacity]Value = undefined;
-        var whitespaces: [measured.capacity][2]u32 = undefined;
-        var first_child_ids: [measured.capacity]ValueId = undefined;
-        var next_sibling_ids: [measured.capacity]ValueId = undefined;
-        return try parseFromSliceBuf(src, measured, &values, &whitespaces, &first_child_ids, &next_sibling_ids, options, comptime_options);
+        const shape = try measure(src, options, comptime_options);
+        debug("parseFromSliceComptime cap {}", .{shape.capacity});
+        var values: [shape.capacity]Value = undefined;
+        var whitespaces: [shape.capacity]Span = undefined;
+        var first_child_ids: [shape.capacity]Value.Id = undefined;
+        var next_sibling_ids: [shape.capacity]Value.Id = undefined;
+        return try parseFromSliceBuf(src, shape, &values, &whitespaces, &first_child_ids, &next_sibling_ids, options, comptime_options);
     }
 }
 
@@ -458,7 +468,7 @@ fn parseType(
     comptime P: ?type, // Parent type
     p: *Parser,
     options: Options,
-) ParseError!T {
+) Error!T {
     if (isContainer(T) and @hasDecl(T, "ednParse")) {
         return T.ednParse(p, options.userdata, options);
     }
@@ -623,15 +633,15 @@ fn parseStruct(comptime T: type, p: *Parser, options: Options) !T {
 }
 
 fn formatParseResult(
-    data: struct { src: [:0]const u8, parse_result: *const ParseResult },
+    data: struct { src: [:0]const u8, result: *const Result },
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
     try formatValue(.{
-        .value = &data.parse_result.values.items[0],
+        .value = &data.result.values.items[0],
         .src = data.src,
-        .parse_result = data.parse_result,
+        .result = data.result,
     }, fmt, options, writer);
 }
 
@@ -639,18 +649,19 @@ fn formatValue(
     data: struct {
         value: *const Value,
         src: [:0]const u8,
-        parse_result: *const ParseResult,
+        result: *const Result,
     },
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
-    const have_ws = data.parse_result.whitespaces.items.len > 0;
-    const index = data.value - data.parse_result.values.items.ptr;
+    const have_ws = data.result.whitespaces.items.len > 0;
+    const index = data.value - data.result.values.items.ptr;
     // std.debug.print("{s} index {} data.value {*}\n", .{ @tagName(data.value.*), index, data.value });
-    if (have_ws) {
+    if (index >= data.result.values.items.len) return error.CorruptData;
+    if (have_ws and index < data.result.whitespaces.items.len) {
         // print leading whitespace
-        const ws = data.parse_result.whitespaces.items[index];
+        const ws = data.result.whitespaces.items[index];
         try writer.writeAll(data.src[ws[0]..ws[1]]);
     }
     const v = data.value.*;
@@ -684,10 +695,10 @@ fn formatValue(
             if (!have_ws and (src.len == 0 or !std.ascii.isWhitespace(src[src.len - 1]))) {
                 try writer.writeByte(' ');
             }
-            try std.fmt.formatType(tagged.value.formatter(data.src, data.parse_result), fmt, options, writer, 0);
+            try std.fmt.formatType(tagged.value.formatter(data.src, data.result), fmt, options, writer, 0);
         },
         inline .list, .vector, .set, .map => |l, tag| {
-            // std.debug.print("{} {*} {*}\n", .{ index, data.value, data.parse_result.values.items.ptr });
+            // std.debug.print("{} {*} {*}\n", .{ index, data.value, data.result.values.items.ptr });
             if (!have_ws and index != 0) {
                 switch (tag) {
                     .list => try writer.writeByte('('),
@@ -699,12 +710,12 @@ fn formatValue(
             }
 
             // visit children
-            var iter = data.parse_result.iterator(data.value);
+            var iter = data.result.iterator(data.value);
             var i: usize = 0;
             while (iter.next()) |child_id| : (i += 1) {
-                const child = &data.parse_result.values.items[child_id];
+                const child = &data.result.values.items[child_id];
                 if (!have_ws and i > 0) try writer.writeByte(' ');
-                try std.fmt.formatType(child.formatter(data.src, data.parse_result), fmt, options, writer, 0);
+                try std.fmt.formatType(child.formatter(data.src, data.result), fmt, options, writer, 0);
             }
             try writer.writeAll(data.src[l.trailing_ws[0]..l.trailing_ws[1]]);
         },
@@ -718,7 +729,7 @@ fn consume(tag: Token.Tag, p: *Parser) ?Token {
     return null;
 }
 
-fn expectNext(tag: Token.Tag, e: ParseError, p: *Parser) ParseError!Token {
+fn expectNext(tag: Token.Tag, e: Error, p: *Parser) Error!Token {
     const t = p.tokenizer.next();
     if (t.tag != tag) {
         debug("expectNext wanted '{s}' got '{s}'", .{ @tagName(tag), t.tag.lexeme() });
@@ -760,49 +771,49 @@ fn parseChar(p: *Parser, t: Token) !Value {
     return .{ .character = char };
 }
 
-fn storeValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?ValueId, options: Options) ValueId {
-    const id = p.values.items.len;
+fn storeValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options: Options) Value.Id {
+    const id = p.res.values.items.len;
     if (options.allocate) {
         debug("{s: <[1]}storeValue('{2s}') id {3}", .{ "", p.depth * 2, loc.src(p.tokenizer.src), id });
-        p.values.appendAssumeCapacity(v);
-        if (options.whitespace) p.whitespaces.appendAssumeCapacity(.{ loc.ws_start, loc.start });
-        p.first_child_ids.appendAssumeCapacity(value_id_max);
-        p.next_sibling_ids.appendAssumeCapacity(value_id_max);
+        p.res.values.appendAssumeCapacity(v);
+        if (options.whitespace) p.res.whitespaces.appendAssumeCapacity(.{ loc.ws_start, loc.start });
+        p.res.first_child_ids.appendAssumeCapacity(Value.value_id_max);
+        p.res.next_sibling_ids.appendAssumeCapacity(Value.value_id_max);
         if (mparent) |parent| {
-            const pv = &p.values.items[parent];
+            const pv = &p.res.values.items[parent];
             switch (pv.*) {
                 inline .list, .vector, .set, .map => |_, tag| {
                     @field(pv, @tagName(tag)).len += 1;
                     // TODO maybe use an iterator.  TODO Parser.result field
-                    var child_id = p.first_child_ids.items[parent];
-                    if (child_id == value_id_max) {
+                    var child_id = p.res.first_child_ids.items[parent];
+                    if (child_id == Value.value_id_max) {
                         // If parent has no children yet, this is the first child
-                        p.first_child_ids.items[parent] = id;
+                        p.res.first_child_ids.items[parent] = id;
                     } else {
                         // Otherwise, find the last sibling and update its next_sibling
-                        while (p.next_sibling_ids.items[child_id] != value_id_max)
-                            child_id = p.next_sibling_ids.items[child_id];
-                        p.next_sibling_ids.items[child_id] = id;
+                        while (p.res.next_sibling_ids.items[child_id] != Value.value_id_max)
+                            child_id = p.res.next_sibling_ids.items[child_id];
+                        p.res.next_sibling_ids.items[child_id] = id;
                     }
                 },
                 .tagged => {
-                    assert(p.first_child_ids.items[parent] == value_id_max);
-                    p.first_child_ids.items[parent] = id;
+                    assert(p.res.first_child_ids.items[parent] == Value.value_id_max);
+                    p.res.first_child_ids.items[parent] = id;
                 },
 
                 else => unreachable,
             }
         }
     } else {
-        p.values.items.len += 1;
-        p.whitespaces.items.len += 1;
-        p.first_child_ids.items.len += 1;
-        p.next_sibling_ids.items.len += 1;
+        p.res.values.items.len += 1;
+        p.res.whitespaces.items.len += 1;
+        p.res.first_child_ids.items.len += 1;
+        p.res.next_sibling_ids.items.len += 1;
     }
-    if (options.whitespace) assert(p.values.items.len == p.whitespaces.items.len);
+    if (options.whitespace) assert(p.res.values.items.len == p.res.whitespaces.items.len);
 
-    assert(p.values.items.len == p.first_child_ids.items.len);
-    assert(p.values.items.len == p.next_sibling_ids.items.len);
+    assert(p.res.values.items.len == p.res.first_child_ids.items.len);
+    assert(p.res.values.items.len == p.res.next_sibling_ids.items.len);
     return id;
 }
 
@@ -823,13 +834,13 @@ fn parseList(
     p: *Parser,
     end_tag: Token.Tag,
     invalid_tags: []const Token.Tag,
-    parent: ValueId,
+    parent: Value.Id,
     options: Options,
-) ParseError!ValueList {
+) Error!Value.List {
     p.depth += 1;
     defer p.depth -= 1;
 
-    var list: ValueList = .{};
+    var list: Value.List = .{};
     outer: while (true) : (list.len += 1) {
         for (0..options.stride) |_| {
             const t = p.tokenizer.next();
@@ -859,7 +870,7 @@ fn parseList(
     return list;
 }
 
-fn parseTagged(p: *Parser, t: Token, parent: ValueId, options: Options) ParseError!Value {
+fn parseTagged(p: *Parser, t: Token, parent: Value.Id, options: Options) Error!Value {
     // Upon encountering a tag, the reader will first read the
     // next element (which may itself be or comprise other
     // tagged elements), then pass the result to the
@@ -893,8 +904,8 @@ fn parseTagged(p: *Parser, t: Token, parent: ValueId, options: Options) ParseErr
     } else next;
 
     if (options.allocate and options.store) {
-        p.values.items[parent].tagged = .{ .tag = t, .value = &p.values.items[next_id] };
-        p.values.items[next_id] = v;
+        p.res.values.items[parent].tagged = .{ .tag = t, .value = &p.res.values.items[next_id] };
+        p.res.values.items[next_id] = v;
     }
     return v;
 }
@@ -905,7 +916,7 @@ pub fn userParseValue(p: *Parser, options: Options) !Value {
     return val;
 }
 
-fn parseValue(p: *Parser, t: Token, parent: ?ValueId, options: Options) !struct { ValueId, Value } {
+fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) !struct { Value.Id, Value } {
     // std.debug.print("{s: <[1]}{2s}:\n  ws '{3s}'\n  content '{4s}'\n", .{ "", p.depth * 2, t.tag.lexeme(), p.tokenizer.src[t.loc.ws_start..t.loc.start], t.src(p.tokenizer.src) });
     debug("{s: <[1]}parseValueInner('{2s}')", .{
         "",
@@ -946,25 +957,25 @@ fn parseValue(p: *Parser, t: Token, parent: ?ValueId, options: Options) !struct 
         .lparen => {
             const id = storeValue(p, ws, .{ .list = .{} }, parent, options);
             const v = Value{ .list = try parseList(p, .rparen, &.{ .rbracket, .rcurly, .eof }, id, options) };
-            if (options.allocate) p.values.items[id] = v;
+            if (options.allocate) p.res.values.items[id] = v;
             return .{ id, v };
         },
         .lbracket => {
             const id = storeValue(p, ws, .{ .vector = .{} }, parent, options);
             const v = Value{ .vector = try parseList(p, .rbracket, &.{ .rparen, .rcurly, .eof }, id, options) };
-            if (options.allocate) p.values.items[id] = v;
+            if (options.allocate) p.res.values.items[id] = v;
             return .{ id, v };
         },
         .set => {
             const id = storeValue(p, ws, .{ .set = .{} }, parent, options);
             const v = Value{ .set = try parseList(p, .rcurly, &.{ .rparen, .rbracket, .eof }, id, options) };
-            if (options.allocate) p.values.items[id] = v;
+            if (options.allocate) p.res.values.items[id] = v;
             return .{ id, v };
         },
         .lcurly => {
             const id = storeValue(p, ws, .{ .map = .{} }, parent, options);
             const v = Value{ .map = try parseList(p, .rcurly, &.{ .rparen, .rbracket, .eof }, id, options.with(.{ .stride = 2 })) };
-            if (options.allocate) p.values.items[id] = v;
+            if (options.allocate) p.res.values.items[id] = v;
             return .{ id, v };
         },
         .rcurly => return error.EndOfMap,
@@ -973,12 +984,12 @@ fn parseValue(p: *Parser, t: Token, parent: ?ValueId, options: Options) !struct 
     };
 
     return .{
-        if (options.store) storeValue(p, t.loc, value, parent, options) else p.values.items.len,
+        if (options.store) storeValue(p, t.loc, value, parent, options) else p.res.values.items.len,
         value,
     };
 }
 
-fn printDiagnostic(p: *const Parser, e: ParseError, t: Token, options: Options) void {
+fn printDiagnostic(p: *const Parser, e: Error, t: Token, options: Options) void {
     if (options.diagnostic) |diag| { // user wants a diagnostic
         diag.* = .{ .line = 0, .column = 0 };
         for (p.tokenizer.src[0..t.loc.start]) |c| {
@@ -1022,10 +1033,54 @@ fn debug(comptime fmt: []const u8, args: anytype) void {
     }
 }
 
+const assert = std.debug.assert;
+
+pub const Tokenizer = @import("Tokenizer.zig");
+
+pub const Parser = @This();
+tokenizer: Tokenizer,
+res: Result,
+depth: u8, // only used when logging
+handlers: TaggedElementHandler.Map,
+/// the last token seen.  used to track required whitespace between tokens.
+last_token: Token = .{
+    .tag = undefined,
+    .loc = .{ .ws_start = 0, .start = 0, .end = std.math.maxInt(u32) },
+},
+
+pub fn init(
+    src: [:0]const u8,
+    comptime handlers: []const TaggedElementHandler.Data,
+) !Parser {
+    return .{
+        .tokenizer = try .init(src),
+        .depth = 0,
+        .res = .init,
+        .handlers = .initComptime(handlers),
+    };
+}
+
+pub fn initFixed(
+    src: [:0]const u8,
+    values: []Value,
+    whitespaces: []Span,
+    first_child_ids: []Value.Id,
+    next_sibling_ids: []Value.Id,
+    comptime handlers: []const TaggedElementHandler.Data,
+) !Parser {
+    return .{
+        .tokenizer = try .init(src),
+        .depth = 0,
+        .res = .{
+            .values = .initBuffer(values),
+            .whitespaces = .initBuffer(whitespaces),
+            .first_child_ids = .initBuffer(first_child_ids),
+            .next_sibling_ids = .initBuffer(next_sibling_ids),
+        },
+        .handlers = .initComptime(handlers),
+    };
+}
+
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
-const assert = std.debug.assert;
-
-pub const Parser = @import("Parser.zig");
-pub const Tokenizer = @import("Tokenizer.zig");
