@@ -85,8 +85,8 @@ fn testParseOptions(alloc: std.mem.Allocator, src: [:0]const u8, options: edn.Op
     defer result.deinit(alloc);
     if (false and options.whitespace) {
         for (0..result.values.items.len) |i| {
-            const ws = result.whitespace.items[i];
-            const v = result.values.items[i];
+            const ws = result.items(.whitespace, i).*;
+            const v = result.items(.values, i).*;
             std.debug.print("{} {s} '{s}'", .{ i, @tagName(v), src[ws[0]..ws[1]] });
             switch (v) {
                 inline .list, .vector, .set, .map => |p| {
@@ -362,8 +362,8 @@ test "tagged handler" {
     try testing.expectEqual(2, res.values.items[1].map.len);
     var iter = res.iterator(&res.values.items[1]);
     const id = iter.nth(4).?;
-    try testing.expectEqual(.tagged, std.meta.activeTag(res.values.items[id]));
-    try testing.expectEqual(.integer, std.meta.activeTag(res.values.items[id].tagged.value.*));
+    try testing.expectEqual(.tagged, std.meta.activeTag(res.items(.values, id).*));
+    try testing.expectEqual(.integer, std.meta.activeTag(res.items(.values, id).*.tagged.value.*));
     try testing.expectEqual(10, userdata1);
 
     const DateTime = struct { int: i128 };
@@ -446,7 +446,7 @@ fn expectOne(ex: Expectation, actual: *const edn.Value, src: [:0]const u8, resul
             var iter = result.iterator(actual);
             for (ex_payload) |e| {
                 const a = iter.next().?;
-                try expectOne(e, &result.values.items[a], src, result);
+                try expectOne(e, &result.items(.values, a).*, src, result);
             }
             try testing.expectEqual(null, iter.next());
         },
@@ -456,9 +456,9 @@ fn expectOne(ex: Expectation, actual: *const edn.Value, src: [:0]const u8, resul
             // std.debug.print("actual {}\n", .{actual.*});
             for (ex.map) |e| {
                 // std.debug.print("{}\n", .{e[0]});
-                try expectOne(e[0], &result.values.items[iter.next().?], src, result);
+                try expectOne(e[0], &result.items(.values, iter.next().?).*, src, result);
                 // std.debug.print("{}\n", .{e[1]});
-                try expectOne(e[1], &result.values.items[iter.next().?], src, result);
+                try expectOne(e[1], &result.items(.values, iter.next().?).*, src, result);
             }
             try testing.expectEqual(null, iter.next());
         },
@@ -474,8 +474,8 @@ fn expect(src: [:0]const u8, expected: []const Expectation) !void {
     const res = try edn.parseFromSliceAlloc(talloc, src, .{}, .{});
     defer res.deinit(talloc);
     // std.debug.print("expected {any}\n", .{expected});
-    // std.debug.print("got      {any}\n", .{res.values.items[0].list.len});
-    // std.debug.print("got      {}\n", .{res.values.items[0].listAt(0, &res)});
+    // std.debug.print("got      {any}\n", .{res.items(.values, 0).*.list.len});
+    // std.debug.print("got      {}\n", .{res.items(.values, 0).*.listAt(0, &res)});
 
     try testing.expectEqual(.list, std.meta.activeTag(res.values.items[0]));
     try testing.expectEqual(expected.len, res.values.items[0].list.len);
@@ -484,7 +484,7 @@ fn expect(src: [:0]const u8, expected: []const Expectation) !void {
     for (0..res.values.items[0].list.len) |i| {
         const child_id = iter.next().?;
         const ex = expected[i];
-        try expectOne(ex, &res.values.items[child_id], src, &res);
+        try expectOne(ex, &res.items(.values, child_id).*, src, &res);
     }
 }
 

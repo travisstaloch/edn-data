@@ -79,9 +79,18 @@ pub const Value = union(Value.Tag) {
         trailing_ws: Span = .{ 0, 0 },
     };
 
-    pub const Id = usize; // TODO use enum
+    pub const Id = enum(u32) {
+        null = std.math.maxInt(u32),
+        _,
+        pub fn int(id: Id) u32 {
+            return @intFromEnum(id);
+        }
+        pub fn from(i: usize) Id {
+            return @enumFromInt(i);
+        }
+    };
+
     pub const Ids = std.ArrayListUnmanaged(Id);
-    pub const value_id_max = std.math.maxInt(Id); // TODO delete. replace with enum field.
 
     pub fn eql(
         a: *const Value,
@@ -108,8 +117,8 @@ pub const Value = union(Value.Tag) {
                     var aiter = a_result.iterator(a);
                     var biter = b_result.iterator(b);
                     break :blk as.len == bs.len and for (0..as.len) |_| {
-                        const aa = &a_result.values.items[aiter.next() orelse break false];
-                        const bb = &b_result.values.items[biter.next() orelse break false];
+                        const aa = a_result.items(.values, aiter.next() orelse break false);
+                        const bb = b_result.items(.values, biter.next() orelse break false);
                         if (!eql(aa, a_src, a_result, bb, b_src, b_result)) break false;
                     } else true;
                 },
@@ -152,7 +161,7 @@ pub const MapContext = struct {
             .list, .vector, .set, .map => |*l| {
                 hptr.update(mem.asBytes(&l.len));
                 var iter = self.result.iterator(v);
-                while (iter.next()) |cidx| self.hashValue(&self.result.values.items[cidx], hptr);
+                while (iter.next()) |cidx| self.hashValue(self.result.items(.values, cidx), hptr);
             },
             // maps are equal if they have the same number of entries, and for
             // every key/value entry in one map an equal key is present and
@@ -219,7 +228,7 @@ pub const Result = struct {
                 var iter = r.iterator(value);
                 for (0..payload.len) |j| {
                     const child_id = iter.next() orelse return error.PathNotFound;
-                    if (i == j) return &r.values.items[child_id];
+                    if (i == j) return r.items(.values, child_id);
                 } else return error.PathNotFound;
             },
             .map => |map| {
@@ -227,8 +236,8 @@ pub const Result = struct {
                 for (0..map.len) |_| {
                     const kid = iter.next() orelse return error.PathNotFound;
                     const vid = iter.next() orelse return error.PathNotFound;
-                    const k = &r.values.items[kid];
-                    const v = &r.values.items[vid];
+                    const k = r.items(.values, kid);
+                    const v = r.items(.values, vid);
                     switch (k.*) {
                         .string,
                         .keyword,
@@ -277,8 +286,8 @@ pub const Result = struct {
         id: Value.Id,
 
         pub fn next(iter: *Iterator) ?Value.Id {
-            if (iter.id == Value.value_id_max) return null;
-            defer iter.id = iter.result.siblings.items[iter.id];
+            if (iter.id == .null) return null;
+            defer iter.id = iter.result.items(.siblings, iter.id).*;
             return iter.id;
         }
 
@@ -295,6 +304,10 @@ pub const Result = struct {
 
     pub fn firstValue(r: *const Result) *const Value {
         return &r.values.items[1];
+    }
+
+    pub fn items(r: anytype, comptime field: std.meta.FieldEnum(Result), id: Value.Id) *@typeInfo(@FieldType(@FieldType(Result, @tagName(field)), "items")).pointer.child {
+        return &@field(r, @tagName(field)).items[id.int()];
     }
 };
 
@@ -365,9 +378,11 @@ pub fn measure(
     comptime comptime_options: ComptimeOptions,
 ) !Shape {
     var p = try Parser.init(src, comptime_options.handlers);
-    const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, 0, options.with(.{ .allocate = false }));
+    const opts = options.with(.{ .allocate = false });
+    const id = storeValue(&p, .zero, .{ .list = .{} }, null, opts);
+    const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, id, opts);
     return .{
-        .capacity = @intCast(p.res.values.items.len + 1),
+        .capacity = @intCast(p.res.values.items.len),
         .top_level_values = @intCast(list.len),
     };
 }
@@ -387,7 +402,7 @@ pub fn parseFromSliceBuf(
     var p = try Parser.initFixed(src, slices.values, slices.whitespaces, slices.children, slices.siblings, comptime_options.handlers);
     const id = storeValue(&p, .zero, .{ .list = .{} }, null, options);
     const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, id, options);
-    if (options.allocate) p.res.values.items[id] = .{ .list = list };
+    if (options.allocate) p.res.items(.values, id).* = .{ .list = list };
 
     debug("shape.values {} parsed values count {} top level count {}", .{
         shape.capacity,
@@ -734,7 +749,7 @@ fn formatValue(
             var iter = data.result.iterator(data.value);
             var i: usize = 0;
             while (iter.next()) |child_id| : (i += 1) {
-                const child = &data.result.values.items[child_id];
+                const child = data.result.items(.values, child_id);
                 if (!have_ws and i > 0) try writer.writeByte(' ');
                 try std.fmt.formatType(child.formatter(data.src, data.result), fmt, options, writer, 0);
             }
@@ -793,33 +808,33 @@ fn parseChar(p: *Parser, t: Token) !Value {
 }
 
 fn storeValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options: Options) Value.Id {
-    const id = p.res.values.items.len;
+    const id: Value.Id = .from(p.res.values.items.len);
     if (options.allocate) {
         debug("{s: <[1]}storeValue('{2s}') id {3}", .{ "", p.depth * 2, loc.src(p.tokenizer.src), id });
         p.res.values.appendAssumeCapacity(v);
         if (options.whitespace) p.res.whitespaces.appendAssumeCapacity(.{ loc.ws_start, loc.start });
-        p.res.children.appendAssumeCapacity(Value.value_id_max);
-        p.res.siblings.appendAssumeCapacity(Value.value_id_max);
+        p.res.children.appendAssumeCapacity(.null);
+        p.res.siblings.appendAssumeCapacity(.null);
         if (mparent) |parent| {
-            const pv = &p.res.values.items[parent];
+            const pv = p.res.items(.values, parent);
             switch (pv.*) {
                 inline .list, .vector, .set, .map => |_, tag| {
                     @field(pv, @tagName(tag)).len += 1;
                     // TODO maybe use an iterator.  TODO Parser.result field
-                    var child_id = p.res.children.items[parent];
-                    if (child_id == Value.value_id_max) {
+                    var child_id = p.res.items(.children, parent).*;
+                    if (child_id == .null) {
                         // If parent has no children yet, this is the first child
-                        p.res.children.items[parent] = id;
+                        p.res.items(.children, parent).* = id;
                     } else {
                         // Otherwise, find the last sibling and update its next_sibling
-                        while (p.res.siblings.items[child_id] != Value.value_id_max)
-                            child_id = p.res.siblings.items[child_id];
-                        p.res.siblings.items[child_id] = id;
+                        while (p.res.items(.siblings, child_id).* != .null)
+                            child_id = p.res.items(.siblings, child_id).*;
+                        p.res.items(.siblings, child_id).* = id;
                     }
                 },
                 .tagged => {
-                    assert(p.res.children.items[parent] == Value.value_id_max);
-                    p.res.children.items[parent] = id;
+                    assert(p.res.items(.children, parent).* == .null);
+                    p.res.items(.children, parent).* = id;
                 },
 
                 else => unreachable,
@@ -925,8 +940,8 @@ fn parseTagged(p: *Parser, t: Token, parent: Value.Id, options: Options) Error!V
     } else next;
 
     if (options.allocate and options.store) {
-        p.res.values.items[parent].tagged = .{ .tag = t, .value = &p.res.values.items[next_id] };
-        p.res.values.items[next_id] = v;
+        p.res.items(.values, parent).tagged = .{ .tag = t, .value = p.res.items(.values, next_id) };
+        p.res.items(.values, next_id).* = v;
     }
     return v;
 }
@@ -978,25 +993,25 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) !struct
         .lparen => {
             const id = storeValue(p, ws, .{ .list = .{} }, parent, options);
             const v = Value{ .list = try parseList(p, .rparen, &.{ .rbracket, .rcurly, .eof }, id, options) };
-            if (options.allocate) p.res.values.items[id] = v;
+            if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .lbracket => {
             const id = storeValue(p, ws, .{ .vector = .{} }, parent, options);
             const v = Value{ .vector = try parseList(p, .rbracket, &.{ .rparen, .rcurly, .eof }, id, options) };
-            if (options.allocate) p.res.values.items[id] = v;
+            if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .set => {
             const id = storeValue(p, ws, .{ .set = .{} }, parent, options);
             const v = Value{ .set = try parseList(p, .rcurly, &.{ .rparen, .rbracket, .eof }, id, options) };
-            if (options.allocate) p.res.values.items[id] = v;
+            if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .lcurly => {
             const id = storeValue(p, ws, .{ .map = .{} }, parent, options);
             const v = Value{ .map = try parseList(p, .rcurly, &.{ .rparen, .rbracket, .eof }, id, options.with(.{ .stride = 2 })) };
-            if (options.allocate) p.res.values.items[id] = v;
+            if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .rcurly => return error.EndOfMap,
@@ -1005,7 +1020,7 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) !struct
     };
 
     return .{
-        if (options.store) storeValue(p, t.loc, value, parent, options) else p.res.values.items.len,
+        if (options.store) storeValue(p, t.loc, value, parent, options) else .from(p.res.values.items.len),
         value,
     };
 }

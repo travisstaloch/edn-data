@@ -112,3 +112,4 @@ $ zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz -
 - [x] compresss parser code by reusing parseList to parse maps.
 - [x] store top level items in a list and reuse parseList again.
 - [x] merge ParseMode and some Parser fields into Options
+- [x] make ValueId an enum
