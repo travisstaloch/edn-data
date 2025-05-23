@@ -600,8 +600,8 @@ test "char parsing" {
     , &.{}));
     try testParse(talloc, "\\u0000");
     try testParse(talloc, "\\u0001");
-    try testing.expectError(error.InvalidChar, expect("\\u0", &.{}));
-    try testing.expectError(error.InvalidChar, expect("\\u000", &.{}));
+    try testing.expectError(error.InvalidToken, expect("\\u0", &.{}));
+    try testing.expectError(error.InvalidToken, expect("\\u000", &.{}));
 }
 
 test "int parsing" {

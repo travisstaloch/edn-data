@@ -346,7 +346,10 @@ fn nextInner(self: *Tokenizer) Token {
             continue :state .invalid;
         },
         .char_u => switch (self.srcAt(0)) {
-            0, ' ', '\n', '\t', '\r', ',', ')', ']', '}' => {},
+            0, ' ', '\n', '\t', '\r', ',', ')', ']', '}' => {
+                const len = self.index - result.loc.start;
+                if (len != 2 and len != 6) result.tag = .invalid;
+            },
             '0'...'9', 'A'...'F', 'a'...'f' => {
                 self.index += 1;
                 continue :state .char_u;
@@ -571,7 +574,7 @@ test "chars" {
     try expectTokens(
         \\\u "hi"
     , &.{ .char, .str, .eof });
-    try expectTokens("\\u0", &.{ .char, .eof });
+    try expectTokens("\\u0 \\u0000", &.{ .invalid, .char, .eof });
 }
 
 test "strs" {
@@ -631,7 +634,7 @@ test "discard" {
 
 test "containers" {
     try expectTokens(
-        \\#{\space \u0}
+        \\#{\space \u0000}
     , &.{ .set, .char, .char, .rcurly, .eof });
 }
 

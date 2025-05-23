@@ -11,7 +11,6 @@ pub const Error = error{
     InvalidStructField,
     MissingFields,
     InvalidToken,
-    InvalidChar,
     InvalidString,
     InvalidUnion,
     InvalidBool,
@@ -779,23 +778,36 @@ fn parseInt(p: *Parser, t: Token) !Value {
 // represented with \uNNNN as in Java. Backslash cannot be followed by
 // whitespace.
 fn parseChar(p: *Parser, t: Token) !Value {
-    // TODO error.InvalidChar shouldn't be reachable. tokenizer should check them.
     debug("{s: <[1]}parseChar()", .{ "", p.depth * 2 });
     assert(t.tag == .char);
     const src0 = t.loc.src(p.tokenizer.src);
     assert(src0[0] == '\\');
     const src = src0[1..];
-    const char: u21 = if (src.len == 0)
-        return error.InvalidChar
-    else if (src.len == 1)
-        src[0]
-    else switch (src[0]) {
-        'u' => if (src.len == 5) try std.fmt.parseInt(u21, src[1..], 16) else return error.InvalidChar,
-        'n' => if (std.mem.eql(u8, "newline", src)) '\n' else return error.InvalidChar,
-        'r' => if (std.mem.eql(u8, "return", src)) '\r' else return error.InvalidChar,
-        's' => if (std.mem.eql(u8, "space", src)) ' ' else return error.InvalidChar,
-        't' => if (std.mem.eql(u8, "tab", src)) '\t' else return error.InvalidChar,
-        else => return error.InvalidChar,
+
+    // tokenizer checks these so we don't need to validate here
+    const char: u21 = switch (src.len) {
+        1 => src[0],
+        3 => blk: {
+            assert(mem.eql(u8, src, "tab"));
+            break :blk '\t';
+        },
+        5 => switch (src[0]) {
+            'u' => try std.fmt.parseInt(u21, src[1..], 16),
+            's' => blk: {
+                assert(mem.eql(u8, src, "space"));
+                break :blk ' ';
+            },
+            else => unreachable,
+        },
+        6 => blk: {
+            assert(mem.eql(u8, src, "return"));
+            break :blk '\r';
+        },
+        7 => blk: {
+            assert(mem.eql(u8, src, "newline"));
+            break :blk '\n';
+        },
+        else => unreachable,
     };
     debug("{s: <[1]}parseChar() result {2}:'{2u}'", .{ "", p.depth * 2, char });
 
