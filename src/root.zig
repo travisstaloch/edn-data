@@ -413,16 +413,7 @@ pub fn parseFromSliceBuf(
     // TODO remove this after early catching when a container isn't closed.  currently errors on unclosed map
     if (p.depth != 0) return error.UnclosedContainer;
     if (p.tokenizer.index != 0 and p.tokenizer.peek().tag != .eof) return error.IncompleteParse;
-
-    return .{
-        .values = p.res.values,
-        .whitespaces = if (options.whitespace)
-            p.res.whitespaces
-        else
-            .{},
-        .children = p.res.children,
-        .siblings = p.res.siblings,
-    };
+    return p.res;
 }
 
 /// performs two parsing passes. the first, measure, determines how many values
@@ -674,6 +665,9 @@ fn formatParseResult(
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
+    if (data.result.values.items.len <= 1 or
+        data.result.values.items[0] != .list or
+        data.result.values.items[0].list.len == 0) return;
     try formatValue(.{
         .value = &data.result.values.items[0],
         .src = data.src,
