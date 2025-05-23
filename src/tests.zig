@@ -794,6 +794,11 @@ test "discard parsing" {
     try expect("#_  #ns.a/tag :key", &.{});
     try expect("#_#ns.a/tag :key", &.{});
     try expect("#_ #_ #_ 1 2 3", &.{});
+    // TODO fold top level, first discard into whitespaces or list.trailing_ws somehow
+    // TODO try testParse(talloc, "#_foo");
+    try testParse(talloc, "#_foo 1");
+    try testParse(talloc, "1 #_   foo");
+    try testParse(talloc, "(  #_   foo  )");
 }
 
 test "no intermediate whitespace" {

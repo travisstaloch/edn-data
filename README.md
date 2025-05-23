@@ -101,15 +101,17 @@ $ zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz -
   - [x] this would require to re-think how parse results are ordered.
     - [x] parse results are stored with the tree structure represented by first_child_ids and next_sibling_ids arrays.  
       - [ ] this is quite a wasteful since most entries are empty. would be bettter as if it was a sparse array represented by a bitset and a full array.
-- [ ] api to parse from reader
-  - [ ] option for duping strings.  currently we don't dupe anything.
 - [x] fix test "unclosed containers"
   - [x] add more "unclosed containers" test cases
 - [w] fuzz test the parser
   - [x] parseFromSliceAlloc, fmtParseResult
   - [x] expand fuzzing: parseTypeFromSlice
+  - [ ] expand fuzzing
 - [x] merge Parser and root.zig as Parser.zig. rename some redundant names such as ParseResult, ParseError.
 - [x] compresss parser code by reusing parseList to parse maps.
 - [x] store top level items in a list and reuse parseList again.
 - [x] merge ParseMode and some Parser fields into Options
 - [x] make ValueId an enum
+- [ ] unify parseFrom* methods with parseType* like std.json
+- [ ] api to parse from reader
+  - [ ] option for duping strings.  currently we don't dupe anything.

@@ -5,7 +5,7 @@ pub const Error = error{
     Eof,
     HandlerParse,
     MissingHandler,
-    EndOfMap,
+    EndOfContainer,
     MissingWhitespaceBetweenValues,
     InvalidStruct,
     InvalidStructField,
@@ -83,9 +83,6 @@ pub const Value = union(Value.Tag) {
         _,
         pub fn int(id: Id) u32 {
             return @intFromEnum(id);
-        }
-        pub fn from(i: usize) Id {
-            return @enumFromInt(i);
         }
     };
 
@@ -319,10 +316,12 @@ pub const Options = struct {
     /// empty and each whitespace will be formatted as a single space.
     whitespace: bool = true,
     // TODO possibly merge store and allocate?
-    /// when false discard by parsing without storing values.
-    store: bool = true,
     /// false to measure without allocating
     allocate: bool = true,
+    /// users generally won't need to set this option.  its used internally to
+    /// skip storing/measuring depending on 'allocate' option.
+    /// when false discard values by parsing without storing them.
+    store: bool = true,
     /// stride = 2 is used to parse maps
     stride: u6 = 1,
 
@@ -345,7 +344,7 @@ pub const Buffers = struct {
     siblings: []Value.Id,
 };
 
-const Shape = struct {
+pub const Shape = struct {
     /// total number of values in Result
     capacity: u32 = 0,
     /// total number of values found at top level
@@ -814,7 +813,7 @@ fn parseChar(p: *Parser, t: Token) !Value {
 }
 
 fn storeValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options: Options) Value.Id {
-    const id: Value.Id = .from(p.res.values.items.len);
+    const id: Value.Id = @enumFromInt(p.res.values.items.len);
     if (options.allocate) {
         debug("{s: <[1]}storeValue('{2s}') id {3}", .{ "", p.depth * 2, loc.src(p.tokenizer.src), id });
         p.res.values.appendAssumeCapacity(v);
@@ -897,9 +896,8 @@ fn parseList(
                 return error.UnclosedContainer;
             }
             _ = p.parseValue(t, parent, options) catch |e| switch (e) {
-                error.EndOfMap, error.Eof => {
-                    list.trailing_ws = .{ t.loc.ws_start, t.loc.end };
-                    p.last_token = t;
+                error.EndOfContainer, error.Eof => {
+                    list.trailing_ws = .{ p.last_token.loc.ws_start, p.last_token.loc.end };
                     break :outer;
                 },
                 else => return e,
@@ -956,7 +954,7 @@ pub fn userParseValue(p: *Parser, options: Options) !Value {
     return val;
 }
 
-fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) !struct { Value.Id, Value } {
+fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!struct { Value.Id, Value } {
     // std.debug.print("{s: <[1]}{2s}:\n  ws '{3s}'\n  content '{4s}'\n", .{ "", p.depth * 2, t.tag.lexeme(), p.tokenizer.src[t.loc.ws_start..t.loc.start], t.src(p.tokenizer.src) });
     debug("{s: <[1]}parseValueInner('{2s}')", .{ "", p.depth * 2, t.src(p.tokenizer.src) });
     if (p.last_token.loc.end == t.loc.start and
@@ -979,10 +977,16 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) !struct
         .discard => {
             const t2 = p.tokenizer.next();
             _, const discard = try p.parseValue(t2, parent, options.with(.{ .store = false }));
-            debug("{s: <[1]}discarded {2s} '{3s}'", .{ "", p.depth * 2, @tagName(discard), t2.src(p.tokenizer.src) });
-            // TODO merge tokens. include discard in whitespace somehow.  TODO add test for discard format
+            // merge tokens. include discard in whitespace.
             const t3 = p.tokenizer.next();
-            return try p.parseValue(t3, parent, options);
+            const tmerged: Token = .{ .tag = t3.tag, .loc = .{
+                .ws_start = t.loc.ws_start,
+                .start = t3.loc.start,
+                .end = t3.loc.end,
+            } };
+            p.last_token = tmerged;
+            debug("{s: <[1]}discarded {2s} '{3s}' merged ws '{4s}'", .{ "", p.depth * 2, @tagName(discard), t2.src(p.tokenizer.src), p.tokenizer.src[tmerged.loc.ws_start..tmerged.loc.start] });
+            return try p.parseValue(tmerged, parent, options);
         },
         .tagged => {
             const id = p.storeValue(t.loc, .{ .tagged = undefined }, parent, options);
@@ -1014,13 +1018,13 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) !struct
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
-        .rcurly => return error.EndOfMap,
+        .rcurly, .rparen, .rbracket => return error.EndOfContainer,
         .eof => return error.Eof,
-        .invalid, .rparen, .rbracket => return error.InvalidToken,
+        .invalid => return error.InvalidToken,
     };
 
     return .{
-        if (options.store) p.storeValue(t.loc, value, parent, options) else .from(p.res.values.items.len),
+        if (options.store) p.storeValue(t.loc, value, parent, options) else @enumFromInt(p.res.values.items.len),
         value,
     };
 }
