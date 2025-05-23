@@ -711,7 +711,7 @@ fn formatValue(
             '\t' => try writer.writeAll("\\tab"),
             '\r' => try writer.writeAll("\\return"),
             else => if (c < 256 and !std.ascii.isPrint(@truncate(c)))
-                try writer.print("\\u{u}", .{c + '0'})
+                try writer.print("\\u{x:0>4}", .{c})
             else if (c >= 256)
                 try writer.print("\\u{u}", .{c})
             else
@@ -779,6 +779,7 @@ fn parseInt(p: *Parser, t: Token) !Value {
 // represented with \uNNNN as in Java. Backslash cannot be followed by
 // whitespace.
 fn parseChar(p: *Parser, t: Token) !Value {
+    // TODO error.InvalidChar shouldn't be reachable. tokenizer should check them.
     debug("{s: <[1]}parseChar()", .{ "", p.depth * 2 });
     assert(t.tag == .char);
     const src0 = t.loc.src(p.tokenizer.src);
@@ -789,7 +790,7 @@ fn parseChar(p: *Parser, t: Token) !Value {
     else if (src.len == 1)
         src[0]
     else switch (src[0]) {
-        'u' => try std.fmt.parseInt(u21, src[1..], 16),
+        'u' => if (src.len == 5) try std.fmt.parseInt(u21, src[1..], 16) else return error.InvalidChar,
         'n' => if (std.mem.eql(u8, "newline", src)) '\n' else return error.InvalidChar,
         'r' => if (std.mem.eql(u8, "return", src)) '\r' else return error.InvalidChar,
         's' => if (std.mem.eql(u8, "space", src)) ' ' else return error.InvalidChar,

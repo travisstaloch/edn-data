@@ -41,7 +41,7 @@ test "map" {
 
 test "fmt chars" {
     const src =
-        \\WS #{\space \tab \return \newline \, \u0}
+        \\WS #{\space \tab \return \newline \, \u0000}
         \\
     ;
 
@@ -493,6 +493,7 @@ inline fn quote(comptime s: []const u8) []const u8 {
 }
 
 const str_hi = Expectation{ .string = quote("hi") };
+const str_wave = Expectation{ .string = quote("🖐") };
 const str_one = Expectation{ .string = quote("one") };
 const str_two = Expectation{ .string = quote("two") };
 const str_and_two = Expectation{ .string = quote("and two") };
@@ -565,12 +566,12 @@ test "string parsing" {
 
 test "char parsing" {
     try expect(
-        \\\a \u \u0 \u1F590
+        \\\a \u \u0000 "🖐"
     , &.{
         .{ .character = 'a' },
         .{ .character = 'u' },
         .{ .character = 0 },
-        .{ .character = '🖐' },
+        str_wave,
     });
     try expect(
         \\\space \newline \return \tab \\
@@ -585,8 +586,11 @@ test "char parsing" {
         \\\u "hi"
     , &.{ .{ .character = 'u' }, str_hi });
     try expect(
-        \\\u1F590 "hi"
-    , &.{ .{ .character = '🖐' }, str_hi });
+        \\"🖐"
+    , &.{str_wave});
+    try expect(
+        \\\u000a
+    , &.{.{ .character = '\n' }});
 
     try testing.expectError(error.InvalidToken, expect(
         \\\
@@ -594,6 +598,10 @@ test "char parsing" {
     try testing.expectError(error.InvalidToken, expect(
         \\\\0
     , &.{}));
+    try testParse(talloc, "\\u0000");
+    try testParse(talloc, "\\u0001");
+    try testing.expectError(error.InvalidChar, expect("\\u0", &.{}));
+    try testing.expectError(error.InvalidChar, expect("\\u000", &.{}));
 }
 
 test "int parsing" {
