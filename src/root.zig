@@ -222,13 +222,11 @@ pub const Result = struct {
 
     fn findOne(component: []const u8, r: *const Result, src: [:0]const u8, value: *const Value) !*const Value {
         switch (value.*) {
-            inline .list, .vector, .set => |payload| {
+            inline .list, .vector, .set => {
                 const i = try std.fmt.parseInt(usize, component, 0);
                 var iter = r.iterator(value);
-                for (0..payload.len) |j| {
-                    const child_id = iter.next() orelse return error.PathNotFound;
-                    if (i == j) return r.items(.values, child_id);
-                } else return error.PathNotFound;
+                const id = iter.nth(i) orelse return error.PathNotFound;
+                return r.items(.values, id);
             },
             .map => |map| {
                 var iter = r.iterator(value);
@@ -290,8 +288,9 @@ pub const Result = struct {
             return iter.id;
         }
 
+        /// n is zero based meaning 0 returns first child
         pub fn nth(iter: *Iterator, n: usize) ?Value.Id {
-            for (1..n) |_| _ = iter.next();
+            for (0..n) |_| _ = iter.next();
             return iter.next();
         }
     };

@@ -361,7 +361,7 @@ test "tagged handler" {
     defer res.deinit(talloc);
     try testing.expectEqual(2, res.values.items[1].map.len);
     var iter = res.iterator(&res.values.items[1]);
-    const id = iter.nth(4).?;
+    const id = iter.nth(3).?;
     try testing.expectEqual(.tagged, std.meta.activeTag(res.items(.values, id).*));
     try testing.expectEqual(.integer, std.meta.activeTag(res.items(.values, id).*.tagged.value.*));
     try testing.expectEqual(10, userdata1);
