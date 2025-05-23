@@ -67,8 +67,8 @@ test "parseFromSliceComptime demo" {
 test "parseFromSliceBuf demo - runtime no allocation" {
     const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
     const shape = comptime try edn.measure(src, .{}, .{}); // src must be comptime known here
-    var buffers: shape.Buffers() = undefined;
-    const result = try edn.parseFromSliceBuf(src, shape, buffers.slices(), .{}, .{});
+    var arrays: shape.Arrays() = undefined;
+    const result = try edn.parseFromSliceBuf(src, shape, arrays.buffers(), .{}, .{});
     try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
 ```

@@ -467,8 +467,8 @@ pub inline fn parseFromSliceComptime(
         @setEvalBranchQuota(comptime_options.eval_branch_quota);
         const shape = try measure(src, options, comptime_options);
         debug("parseFromSliceComptime cap {}", .{shape.capacity});
-        var buffers: shape.Arrays() = undefined;
-        return try parseFromSliceBuf(src, shape, buffers.buffers(), options, comptime_options);
+        var arrays: shape.Arrays() = undefined;
+        return try parseFromSliceBuf(src, shape, arrays.buffers(), options, comptime_options);
     }
 }
 
