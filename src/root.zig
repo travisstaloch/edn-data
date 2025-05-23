@@ -688,7 +688,7 @@ fn formatValue(
     const have_ws = data.result.whitespaces.items.len > 0;
     const index = data.value - data.result.values.items.ptr;
     // std.debug.print("{s} index {} data.value {*}\n", .{ @tagName(data.value.*), index, data.value });
-    if (index >= data.result.values.items.len) return error.CorruptData;
+    if (index >= data.result.values.items.len) return; // corrupt data
     if (have_ws and index < data.result.whitespaces.items.len) {
         // print leading whitespace
         const ws = data.result.whitespaces.items[index];
