@@ -13,6 +13,7 @@ E          #{\e \E}
 STR_ESC    #{\" \n \t \\ \r}
 ; TODO
 NUM_SUFFIX #{\N \M}
+EOF        #{\u0000}
 ; TODO
 ; * string sets
 ;; SYMBOL_2  #statez/stringset #{"nil" "true" "false"} 
@@ -45,7 +46,7 @@ start {
   \"       str
   \\       char
   \:       {COLON invalid keyword nil}
-  \u0000   eof
+  EOF      eof
   invalid  nil
 } number {
   DIGIT number
@@ -69,18 +70,18 @@ start {
 } str {
   \"     accept
   \\     str_escape
-  \u0000 invalid
+  EOF invalid
   str nil
 } str_escape {
   STR_ESC str
   invalid nil
 } char {
   \u char_u
-  \u0000 invalid
+  EOF invalid
   ; (check nil for named chars or single char)
   CHAR_NAMED accept
 } char_u {
-  \u0000 invalid
+  EOF invalid
   ; hex digits (up to 4) accept
   HEX {#statez/check-len 4 accept char_u nil} ; TODO implement #statez/check-len
 } ws {
@@ -88,7 +89,7 @@ start {
   accept nil
 } comment {
   \newline {WS_COMMENT comment accept nil}
-  \u0000 accept
+  EOF accept
   comment nil
 } keyword {
   KEYWORD keyword

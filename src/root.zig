@@ -1,5 +1,45 @@
 //! https://github.com/edn-format/edn
 
+tokenizer: Tokenizer,
+res: Result,
+depth: u8, // only used when logging
+handlers: TaggedElementHandler.Map,
+/// the last token seen.  used to track required whitespace between tokens.
+last_token: Token = .{
+    .tag = undefined,
+    .loc = .{ .ws_start = 0, .start = 0, .end = std.math.maxInt(u32) },
+},
+
+pub fn init(
+    src: [:0]const u8,
+    comptime handlers: []const TaggedElementHandler.Data,
+) !Parser {
+    return .{
+        .tokenizer = try .init(src),
+        .depth = 0,
+        .res = .init,
+        .handlers = .initComptime(handlers),
+    };
+}
+
+pub fn initFixed(
+    src: [:0]const u8,
+    buffers: Buffers,
+    comptime handlers: []const TaggedElementHandler.Data,
+) !Parser {
+    return .{
+        .tokenizer = try .init(src),
+        .depth = 0,
+        .res = .{
+            .values = .initBuffer(buffers.values),
+            .whitespaces = .initBuffer(buffers.whitespaces),
+            .children = .initBuffer(buffers.children),
+            .siblings = .initBuffer(buffers.siblings),
+        },
+        .handlers = .initComptime(handlers),
+    };
+}
+
 pub const Error = error{
     Parse,
     Eof,
@@ -19,10 +59,13 @@ pub const Error = error{
     InvalidInt,
     InvalidFloat,
     UnclosedContainer,
+    ExtraInput,
+    AllocatorRequired,
 } ||
     Allocator.Error ||
     std.fmt.ParseIntError ||
-    std.fmt.ParseFloatError;
+    std.fmt.ParseFloatError ||
+    error{InvalidUTF8};
 
 pub const Token = Tokenizer.Token;
 
@@ -91,10 +134,10 @@ pub const Value = union(Value.Tag) {
     pub fn eql(
         a: *const Value,
         a_src: [:0]const u8,
-        a_result: *const Result,
+        a_result: Result,
         b: *const Value,
         b_src: [:0]const u8,
-        b_result: *const Result,
+        b_result: Result,
     ) bool {
         return a.* == std.meta.activeTag(b.*) and
             switch (a.*) {
@@ -129,7 +172,7 @@ pub const Value = union(Value.Tag) {
             };
     }
 
-    pub fn formatter(value: *const Value, src: [:0]const u8, result: *const Result) std.fmt.Formatter(formatValue) {
+    pub fn formatter(value: *const Value, src: [:0]const u8, result: Result) std.fmt.Formatter(formatValue) {
         return .{ .data = .{ .value = value, .src = src, .result = result } };
     }
 
@@ -137,14 +180,14 @@ pub const Value = union(Value.Tag) {
         return @intFromEnum(@as(Tag, v)) >= @intFromEnum(Tag.list);
     }
 
-    pub fn listAt(v: *const Value, index: usize, result: *const Result) *const Value {
+    pub fn listAt(v: *const Value, index: usize, result: Result) *const Value {
         return &result.values.items[v - result.values.items.ptr + index];
     }
 };
 
 pub const MapContext = struct {
     src: [:0]const u8,
-    result: *const Result,
+    result: Result,
 
     fn hashValue(self: MapContext, v: *const Value, hptr: anytype) void {
         hptr.update(mem.asBytes(&@intFromEnum(v.*)));
@@ -217,7 +260,7 @@ pub const Result = struct {
         rr.siblings.deinit(alloc);
     }
 
-    fn findOne(component: []const u8, r: *const Result, src: [:0]const u8, value: *const Value) !*const Value {
+    fn findOne(component: []const u8, r: Result, src: [:0]const u8, value: *const Value) !*const Value {
         switch (value.*) {
             inline .list, .vector, .set => {
                 const i = try std.fmt.parseInt(usize, component, 0);
@@ -261,7 +304,9 @@ pub const Result = struct {
     }
 
     /// path: search components joined by double slashes ('//'). i.e. '0//1//foo'
-    pub fn find(r: *const Result, path: []const u8, src: [:0]const u8) !*const Value {
+    /// search starts from top level which a list so first path component should
+    /// be an integer index.
+    pub fn find(r: Result, path: []const u8, src: [:0]const u8) !*const Value {
         var it = mem.splitSequence(u8, path, "//");
         const component0 = it.next() orelse return error.InvalidPath;
         var cur = try findOne(component0, r, src, &r.values.items[0]);
@@ -271,12 +316,12 @@ pub const Result = struct {
         return if (it.next() != null) error.PathNotFound else cur;
     }
 
-    pub fn formatter(result: *const Result, src: [:0]const u8) std.fmt.Formatter(formatParseResult) {
+    pub fn formatter(result: Result, src: [:0]const u8) std.fmt.Formatter(formatParseResult) {
         return .{ .data = .{ .src = src, .result = result } };
     }
 
     pub const Iterator = struct {
-        result: *const Result,
+        result: Result,
         id: Value.Id,
 
         pub fn next(iter: *Iterator) ?Value.Id {
@@ -293,15 +338,19 @@ pub const Result = struct {
     };
 
     /// visits each child of parent.  does not descend to grand children.
-    pub fn iterator(result: *const Result, parent: *const Value) Iterator {
+    pub fn iterator(result: Result, parent: *const Value) Iterator {
         return .{ .result = result, .id = result.children.items[parent - result.values.items.ptr] };
     }
 
-    pub fn firstValue(r: *const Result) *const Value {
+    pub fn firstValue(r: Result) *const Value {
         return &r.values.items[1];
     }
 
-    pub fn items(r: anytype, comptime field: std.meta.FieldEnum(Result), id: Value.Id) *@typeInfo(@FieldType(@FieldType(Result, @tagName(field)), "items")).pointer.child {
+    fn ItemsField(T: type, field: anytype) type {
+        return @typeInfo(@FieldType(@FieldType(T, @tagName(field)), "items")).pointer.child;
+    }
+
+    pub fn items(r: anytype, comptime field: std.meta.FieldEnum(Result), id: Value.Id) *ItemsField(Result, field) {
         return &@field(r, @tagName(field)).items[id.int()];
     }
 };
@@ -312,11 +361,12 @@ pub const Options = struct {
     /// with format <file_path>:<line>:<column> will be printed to diagnostic.error_message.
     /// user is responsible for setting Diagnostic.file_path.
     diagnostic: ?*Diagnostic = null,
+    allocator: ?Allocator = null,
     /// whether to save whitespace.  when false ParseResult.whitespaces will be
     /// empty and each whitespace will be formatted as a single space.
     whitespace: bool = true,
     // TODO possibly merge store and allocate?
-    /// false to measure without allocating
+    /// false to measure by updating result lengths without allocating.
     allocate: bool = true,
     /// users generally won't need to set this option.  its used internally to
     /// skip storing/measuring depending on 'allocate' option.
@@ -324,16 +374,22 @@ pub const Options = struct {
     store: bool = true,
     /// stride = 2 is used to parse maps
     stride: u6 = 1,
+    error_on_extra_input: bool = true,
 
     /// returns a copy of 'self' with fields from 'other' which don't have their default value.
     pub fn with(self: Options, other: Options) Options {
-        var r = self;
+        var result = self;
         inline for (@typeInfo(Options).@"struct".fields) |f| {
-            if (@field(other, f.name) != f.defaultValue().?) {
-                @field(r, f.name) = @field(other, f.name);
+            switch (@typeInfo(f.type)) {
+                .optional => if (@field(other, f.name) != null) {
+                    @field(result, f.name) = @field(other, f.name);
+                },
+                else => if (@field(other, f.name) != f.defaultValue().?) {
+                    @field(result, f.name) = @field(other, f.name);
+                },
             }
         }
-        return r;
+        return result;
     }
 };
 
@@ -376,7 +432,7 @@ pub fn measure(
 ) !Shape {
     var p = try Parser.init(src, comptime_options.handlers);
     const opts = options.with(.{ .allocate = false });
-    const id = storeValue(&p, .zero, .{ .list = .{} }, null, opts);
+    const id = addValue(&p, .zero, .{ .list = .{} }, null, opts);
     const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, id, opts);
     return .{
         .capacity = @intCast(p.res.values.items.len),
@@ -397,7 +453,8 @@ pub fn parseFromSliceBuf(
     comptime comptime_options: ComptimeOptions,
 ) !Result {
     var p = try Parser.initFixed(src, buffers, comptime_options.handlers);
-    const id = storeValue(&p, .zero, .{ .list = .{} }, null, options);
+    const id = addValue(&p, .zero, .{ .list = .{} }, null, options);
+    if (src.len == 0) return p.res;
     const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, id, options);
     if (options.allocate) p.res.items(.values, id).* = .{ .list = list };
 
@@ -407,47 +464,44 @@ pub fn parseFromSliceBuf(
         list.len,
     });
 
-    // TODO remove this after early catching when a container isn't closed.  currently errors on unclosed map
-    if (p.depth != 0) return error.UnclosedContainer;
-    if (p.tokenizer.index != 0 and p.tokenizer.peek().tag != .eof) return error.IncompleteParse;
+    if (options.error_on_extra_input and
+        p.tokenizer.index != 0 and p.tokenizer.peek().tag != .eof)
+    {
+        // std.debug.print("src {s}\n{any}\nres.values.items.len {}\n{}", .{ src, src, p.res.values.items.len, p.res.formatter(src) });
+        // for (p.res.values.items) |item| {
+        //     std.debug.print("{s}\n", .{@tagName(item)});
+        // }
+        return error.ExtraInput;
+    }
     return p.res;
 }
 
-/// performs two parsing passes. the first, measure, determines how many values
-/// and whitespace entries are needed.  and the second allocates and write to
-/// those entries using parseFromSliceBuf()
-pub fn parseFromSliceAlloc(
-    alloc: Allocator,
+fn parseFromSliceAlloc(
     src: [:0]const u8,
     options: Options,
     comptime comptime_options: ComptimeOptions,
 ) !Result {
+    const allocator = options.allocator orelse return error.AllocatorRequired;
     const shape = try measure(src, options, comptime_options);
 
-    const values = try alloc.alloc(Value, shape.capacity);
-    errdefer alloc.free(values);
+    const values = try allocator.alloc(Value, shape.capacity);
+    errdefer allocator.free(values);
     const whitespaces: []Span = if (options.whitespace)
-        try alloc.alloc(Span, shape.capacity)
+        try allocator.alloc(Span, shape.capacity)
     else
         &.{};
-    errdefer alloc.free(whitespaces);
-    const children = try alloc.alloc(Value.Id, shape.capacity);
-    errdefer alloc.free(children);
-    const siblings = try alloc.alloc(Value.Id, shape.capacity);
-    errdefer alloc.free(siblings);
+    errdefer allocator.free(whitespaces);
+    const children = try allocator.alloc(Value.Id, shape.capacity);
+    errdefer allocator.free(children);
+    const siblings = try allocator.alloc(Value.Id, shape.capacity);
+    errdefer allocator.free(siblings);
 
-    return try parseFromSliceBuf(
-        src,
-        shape,
-        .{
-            .values = values,
-            .whitespaces = whitespaces,
-            .children = children,
-            .siblings = siblings,
-        },
-        options,
-        comptime_options,
-    );
+    return try parseFromSliceBuf(src, shape, .{
+        .values = values,
+        .whitespaces = whitespaces,
+        .children = children,
+        .siblings = siblings,
+    }, options, comptime_options);
 }
 
 pub const ComptimeOptions = struct {
@@ -469,10 +523,20 @@ pub inline fn parseFromSliceComptime(
     }
 }
 
-pub fn parseTypeFromSlice(comptime T: type, src: [:0]const u8, options: Options) !T {
-    var p = try Parser.init(src, &.{});
-    const t = try parseType(T, null, &p, options.with(.{ .allocate = false }));
-    if (!p.tokenizer.isTag(.eof)) return error.InvalidType;
+/// T = Result uses options.allocator to parse arbitrary shaped data.
+/// performs two parsing passes first measure and then store.
+/// and the second allocates and write to those entries using parseFromSliceBuf()
+pub fn parseFromSlice(comptime T: type, src: [:0]const u8, options: Options, comptime comptime_options: ComptimeOptions) Error!T {
+    var p = try Parser.init(src, comptime_options.handlers);
+    const t = if (T == Result)
+        try parseFromSliceAlloc(src, options, comptime_options)
+    else t: {
+        const t = try parseType(T, null, &p, options.with(.{ .allocate = false }));
+        if (options.error_on_extra_input and
+            (p.tokenizer.index == 0 or !p.tokenizer.isTag(.eof)))
+            return error.ExtraInput;
+        break :t t;
+    };
     return t;
 }
 
@@ -657,7 +721,7 @@ fn parseStruct(comptime T: type, p: *Parser, options: Options) !T {
 }
 
 fn formatParseResult(
-    data: struct { src: [:0]const u8, result: *const Result },
+    data: struct { src: [:0]const u8, result: Result },
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
@@ -676,7 +740,7 @@ fn formatValue(
     data: struct {
         value: *const Value,
         src: [:0]const u8,
-        result: *const Result,
+        result: Result,
     },
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
@@ -812,7 +876,7 @@ fn parseChar(p: *Parser, t: Token) !Value {
     return .{ .character = char };
 }
 
-fn storeValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options: Options) Value.Id {
+fn addValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options: Options) Value.Id {
     const id: Value.Id = @enumFromInt(p.res.values.items.len);
     if (options.allocate) {
         debug("{s: <[1]}storeValue('{2s}') id {3}", .{ "", p.depth * 2, loc.src(p.tokenizer.src), id });
@@ -858,15 +922,6 @@ fn storeValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options:
     return id;
 }
 
-fn tokenToValueTag(tag: Token.Tag) Value.Tag {
-    return switch (tag) {
-        .lparen, .eof => .list,
-        .lbracket => .vector,
-        .set => .set,
-        else => unreachable,
-    };
-}
-
 /// handles lists, vectors, sets and maps.
 /// prefix.tag == .eof is used at top level which is treated as an implicit
 /// list with no parens. maps are parsed with options.stride = 2.  discards with
@@ -885,7 +940,7 @@ fn parseList(
     outer: while (true) : (list.len += 1) {
         for (0..options.stride) |_| {
             const t = p.tokenizer.next();
-            // debug("{s: <[1]}parseList('{2s}') {3} {4} {5any}", .{ "", p.depth * 2, t.src(p.tokenizer.src), t.tag, end_tag, invalid_tags });
+            // debug("{s: <[1]}parseList('{2s}') {3}", .{ "", p.depth * 2, t.src(p.tokenizer.src), t.tag });
             if (t.tag == end_tag) {
                 list.trailing_ws = .{ t.loc.ws_start, t.loc.end };
                 p.last_token = t;
@@ -989,31 +1044,31 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!s
             return try p.parseValue(tmerged, parent, options);
         },
         .tagged => {
-            const id = p.storeValue(t.loc, .{ .tagged = undefined }, parent, options);
+            const id = p.addValue(t.loc, .{ .tagged = undefined }, parent, options);
             return .{ id, try p.parseTagged(t, id, options) };
         },
         .keyword => .{ .keyword = t },
         .symbol => .{ .symbol = t },
         .lparen => {
-            const id = p.storeValue(ws, .{ .list = .{} }, parent, options);
+            const id = p.addValue(ws, .{ .list = .{} }, parent, options);
             const v = Value{ .list = try p.parseList(.rparen, &.{ .rbracket, .rcurly, .eof }, id, options) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .lbracket => {
-            const id = p.storeValue(ws, .{ .vector = .{} }, parent, options);
+            const id = p.addValue(ws, .{ .vector = .{} }, parent, options);
             const v = Value{ .vector = try p.parseList(.rbracket, &.{ .rparen, .rcurly, .eof }, id, options) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .set => {
-            const id = p.storeValue(ws, .{ .set = .{} }, parent, options);
+            const id = p.addValue(ws, .{ .set = .{} }, parent, options);
             const v = Value{ .set = try p.parseList(.rcurly, &.{ .rparen, .rbracket, .eof }, id, options) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .lcurly => {
-            const id = p.storeValue(ws, .{ .map = .{} }, parent, options);
+            const id = p.addValue(ws, .{ .map = .{} }, parent, options);
             const v = Value{ .map = try p.parseList(.rcurly, &.{ .rparen, .rbracket, .eof }, id, options.with(.{ .stride = 2 })) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
@@ -1024,7 +1079,7 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!s
     };
 
     return .{
-        if (options.store) p.storeValue(t.loc, value, parent, options) else @enumFromInt(p.res.values.items.len),
+        if (options.store) p.addValue(t.loc, value, parent, options) else @enumFromInt(p.res.values.items.len),
         value,
     };
 }
@@ -1059,46 +1114,6 @@ fn printDiagnostic(p: *const Parser, e: Error, t: Token, options: Options) void 
         }
         fbs.writer().writeByte(0) catch {};
     }
-}
-
-tokenizer: Tokenizer,
-res: Result,
-depth: u8, // only used when logging
-handlers: TaggedElementHandler.Map,
-/// the last token seen.  used to track required whitespace between tokens.
-last_token: Token = .{
-    .tag = undefined,
-    .loc = .{ .ws_start = 0, .start = 0, .end = std.math.maxInt(u32) },
-},
-
-pub fn init(
-    src: [:0]const u8,
-    comptime handlers: []const TaggedElementHandler.Data,
-) !Parser {
-    return .{
-        .tokenizer = try .init(src),
-        .depth = 0,
-        .res = .init,
-        .handlers = .initComptime(handlers),
-    };
-}
-
-pub fn initFixed(
-    src: [:0]const u8,
-    buffers: Buffers,
-    comptime handlers: []const TaggedElementHandler.Data,
-) !Parser {
-    return .{
-        .tokenizer = try .init(src),
-        .depth = 0,
-        .res = .{
-            .values = .initBuffer(buffers.values),
-            .whitespaces = .initBuffer(buffers.whitespaces),
-            .children = .initBuffer(buffers.children),
-            .siblings = .initBuffer(buffers.siblings),
-        },
-        .handlers = .initComptime(handlers),
-    };
 }
 
 const log = std.log.scoped(.edn);

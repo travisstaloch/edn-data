@@ -12,10 +12,10 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
     const file = try std.fs.cwd().openFile(args[1], .{});
-    const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, .@"8", 0);
+    const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, 8, 0);
     defer alloc.free(src);
     var diag: edn.Diagnostic = .{ .file_path = args[1] };
-    const result = edn.parseFromSliceAlloc(alloc, src, .{ .diagnostic = &diag }, .{}) catch {
+    const result = edn.parseFromSlice(edn.Result, src, .{ .diagnostic = &diag, .allocator = alloc }, .{}) catch {
         try std.io.getStdErr().writer().print("{s}\n", .{diag.error_message});
         return;
     };
