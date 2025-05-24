@@ -48,6 +48,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/ringbuffer.zig"),
             .target = target,
             .optimize = optimize,
+            .name = "test-ringbuffer",
         });
         tests.filters = filters;
         const run_tests = b.addRunArtifact(tests);
@@ -59,6 +60,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/Tokenizer.zig"),
             .target = target,
             .optimize = optimize,
+            .name = "test-Tokenizer",
         });
         tests.filters = filters;
         const run_tests = b.addRunArtifact(tests);

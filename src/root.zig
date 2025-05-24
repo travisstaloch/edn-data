@@ -33,7 +33,7 @@ pub fn initFixed(
         .res = .{
             .values = .initBuffer(buffers.values),
             .whitespaces = .initBuffer(buffers.whitespaces),
-            .children = .initBuffer(buffers.children),
+            .children = buffers.children,
             .siblings = .initBuffer(buffers.siblings),
         },
         .handlers = .initComptime(handlers),
@@ -242,7 +242,7 @@ pub const TaggedElementHandler = struct {
 pub const Result = struct {
     values: Values,
     whitespaces: Whitespaces,
-    children: Value.Ids,
+    children: std.DynamicBitSetUnmanaged,
     siblings: Value.Ids,
 
     pub const init: Result = .{
@@ -339,14 +339,15 @@ pub const Result = struct {
 
     /// visits each child of parent.  does not descend to grand children.
     pub fn iterator(result: Result, parent: *const Value) Iterator {
-        return .{ .result = result, .id = result.children.items[parent - result.values.items.ptr] };
+        const id = parent - result.values.items.ptr;
+        return .{ .result = result, .id = if (result.children.isSet(id)) @enumFromInt(id + 1) else .null };
     }
 
     pub fn firstValue(r: Result) *const Value {
         return &r.values.items[1];
     }
 
-    fn ItemsField(T: type, field: anytype) type {
+    fn ItemsField(T: type, field: std.meta.FieldEnum(Result)) type {
         return @typeInfo(@FieldType(@FieldType(T, @tagName(field)), "items")).pointer.child;
     }
 
@@ -396,7 +397,7 @@ pub const Options = struct {
 pub const Buffers = struct {
     values: []Value,
     whitespaces: []Span,
-    children: []Value.Id,
+    children: std.DynamicBitSetUnmanaged,
     siblings: []Value.Id,
 };
 
@@ -407,17 +408,19 @@ pub const Shape = struct {
     top_level_values: u32 = 0,
 
     pub inline fn Arrays(comptime s: Shape) type {
+        const MaskInt = std.DynamicBitSetUnmanaged.MaskInt;
         return struct {
             values: [s.capacity]Value,
             whitespace: [s.capacity]Span,
-            children: [s.capacity]Value.Id,
+            children: [(s.capacity + @sizeOf(MaskInt) - 1) / @sizeOf(MaskInt)]MaskInt,
             siblings: [s.capacity]Value.Id,
 
             pub fn buffers(arrays: *@This()) Buffers {
+                @memset(&arrays.children, 0);
                 return .{
                     .values = &arrays.values,
                     .whitespaces = &arrays.whitespace,
-                    .children = &arrays.children,
+                    .children = .{ .bit_length = arrays.values.len, .masks = &arrays.children },
                     .siblings = &arrays.siblings,
                 };
             }
@@ -491,8 +494,8 @@ fn parseFromSliceAlloc(
     else
         &.{};
     errdefer allocator.free(whitespaces);
-    const children = try allocator.alloc(Value.Id, shape.capacity);
-    errdefer allocator.free(children);
+    var children = try std.DynamicBitSetUnmanaged.initEmpty(allocator, shape.capacity);
+    errdefer children.deinit(allocator);
     const siblings = try allocator.alloc(Value.Id, shape.capacity);
     errdefer allocator.free(siblings);
 
@@ -882,28 +885,27 @@ fn addValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options: O
         debug("{s: <[1]}storeValue('{2s}') id {3}", .{ "", p.depth * 2, loc.src(p.tokenizer.src), id });
         p.res.values.appendAssumeCapacity(v);
         if (options.whitespace) p.res.whitespaces.appendAssumeCapacity(.{ loc.ws_start, loc.start });
-        p.res.children.appendAssumeCapacity(.null);
         p.res.siblings.appendAssumeCapacity(.null);
         if (mparent) |parent| {
             const pv = p.res.items(.values, parent);
             switch (pv.*) {
                 inline .list, .vector, .set, .map => |_, tag| {
                     @field(pv, @tagName(tag)).len += 1;
-                    // TODO maybe use an iterator.  TODO Parser.result field
-                    var child_id = p.res.items(.children, parent).*;
-                    if (child_id == .null) {
+                    if (!p.res.children.isSet(parent.int())) {
                         // If parent has no children yet, this is the first child
-                        p.res.items(.children, parent).* = id;
+                        p.res.children.set(parent.int());
                     } else {
                         // Otherwise, find the last sibling and update its next_sibling
-                        while (p.res.items(.siblings, child_id).* != .null)
+                        var child_id: Value.Id = @enumFromInt(parent.int() + 1);
+                        while (p.res.items(.siblings, child_id).* != .null) {
                             child_id = p.res.items(.siblings, child_id).*;
+                        }
                         p.res.items(.siblings, child_id).* = id;
                     }
                 },
                 .tagged => {
-                    assert(p.res.items(.children, parent).* == .null);
-                    p.res.items(.children, parent).* = id;
+                    assert(!p.res.children.isSet(parent.int()));
+                    p.res.children.set(parent.int());
                 },
 
                 else => unreachable,
@@ -912,12 +914,10 @@ fn addValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options: O
     } else {
         p.res.values.items.len += 1;
         p.res.whitespaces.items.len += 1;
-        p.res.children.items.len += 1;
         p.res.siblings.items.len += 1;
     }
-    if (options.whitespace) assert(p.res.values.items.len == p.res.whitespaces.items.len);
 
-    assert(p.res.values.items.len == p.res.children.items.len);
+    if (options.whitespace) assert(p.res.values.items.len == p.res.whitespaces.items.len);
     assert(p.res.values.items.len == p.res.siblings.items.len);
     return id;
 }
