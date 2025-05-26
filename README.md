@@ -9,15 +9,15 @@ This library provides both runtime and compile-time parsing capabilities for EDN
 - [Usage](#usage)
 
 #### Features
-* parse arbitrary data with `edn.parseFromSliceAlloc()` or `edn.parseFromSliceBuf()`.  `edn.measure()` is used to determine required buffer sizes for `parseFromSliceBuf()`.
-  * `edn.Options.whitespace` - whether to save whitespace and comments.  false means to minify and that `ParseResult.whitespace.len` will be 0 and each merged whitespace/comment will be replaced by a single space in `fmtParseResult()`.
-* parse structured data with `edn.parseTypeFromSlice(T)`
+* parse arbitrary data with `edn.parseFromSlice(edn.Result, ...)` or `edn.parseFromSliceBuf()`.  `edn.measure()` is used to determine required buffer sizes for `parseFromSliceBuf()`.
+  * `edn.Options.whitespace` - whether to save whitespace and comments.  false means to minify and each whitespace/comment span will be replaced by a single space in `fmtParseResult()`.
+* parse structured data with `edn.parseFromSlice(T)`
   * custom parsing when `T` provides a  `pub fn ednParse()`.  see [src/tests.zig](src/tests.zig) `test "ednParse()"` for an example.
 * [tagged element](https://github.com/edn-format/edn#tagged-elements) handlers.  see [src/tests.zig](src/tests.zig) `test "tagged handler"` for an example.
 * `ParseResult.find()` - access parsed data with simple queries such as `'0//1//foo'`.  see [src/tests.zig](src/tests.zig) `test "ParseResult find()"` for examples.
 * comptime parsing
   * parse arbitrary data with `edn.parseFromSliceComptime()`
-  * parse structured data with `comptime edn.parseTypeFromSlice(T)`
+  * parse structured data with `comptime edn.parseFromSlice(T)`
 * formatting
   * format parse results with `parse_result.formatter(src)`
 
@@ -28,7 +28,7 @@ fetch with the package manager
 $ zig fetch --save git+https://github.com/travisstaloch/edn-data#0.14.0
 ```
 ```console
-# with zig nightly
+# with zig nightly - TODO
 $ zig fetch --save git+https://github.com/travisstaloch/edn-data
 ```
 ```zig
@@ -42,11 +42,14 @@ exe.root_module.addImport("extensible-data-notation", edn_dep.module("extensible
 ```zig
 // main.zig
 const edn = @import("extensible-data-notation");
-test "parseFromSliceAlloc demo with Diagnostic" {
+test "parseFromSlice demo with Diagnostic" {
     const src = "a (a b c [1 2 3] {:a 1, :b 2})";
     // on error, Diagnostic line, column, and error_message will be populated.
     var diag: edn.Diagnostic = .{ .file_path = "<test-file>" };
-    const result = edn.parseFromSliceAlloc(std.testing.allocator, src, .{ .diagnostic = &diag }, .{}) catch |e| {
+    const result = edn.parseFromSlice(edn.Result, src, .{
+        .diagnostic = &diag,
+        .allocator = std.testing.allocator,
+    }, .{}) catch |e| {
         std.log.debug("{s}\n", .{diag.error_message});
         return e;
     };
@@ -81,10 +84,10 @@ $ zig build test
 
 ##### Fuzzing
 ```console
-$ zig build test -Dtest-filters="fuzz parseFromSliceAlloc and fmtParseResult" --summary all --fuzz --port 38495
+$ zig build test -Dtest-filters="fuzz parseFromSlice and format" --summary all --fuzz --port 38495
 ```
 ```console
-$ zig build test -Dtest-filters="fuzz parseTypeFromSlice" --summary all --fuzz --port 38495
+$ zig build test -Dtest-filters="fuzz parseFromSlice(T)" --summary all --fuzz --port 38495
 ```
 
 #### References

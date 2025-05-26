@@ -2,7 +2,7 @@ const Tokenizer = @This();
 
 src: [:0]const u8,
 index: u32 = 0,
-lookbehind: RingBuffer = .init,
+lookbehind: RingBuffer = .init, // TODO remove lookbehind? i think this is only being used for peek.
 
 const lookbehind_len = 8;
 

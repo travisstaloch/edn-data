@@ -419,6 +419,7 @@ const Expectation = union(edn.Value.Tag) {
     vector: []const Expectation,
     set: []const Expectation,
     map: []const [2]Expectation,
+    userdata,
 };
 
 fn expectOne(ex: Expectation, actual: *const edn.Value, src: [:0]const u8, result: *const edn.Result) !void {
@@ -463,6 +464,7 @@ fn expectOne(ex: Expectation, actual: *const edn.Value, src: [:0]const u8, resul
             try testing.expectEqualStrings(ex.tagged[0], tagged.tag.src(src));
             try expectOne(ex.tagged[1].*, tagged.value, src, result);
         },
+        .userdata => unreachable,
         // else => std.debug.panic("TODO {s}", .{@tagName(actual.*)}),
     }
 }
@@ -988,8 +990,8 @@ fn fuzzOne(src: [:0]const u8) !void {
     }
 }
 
-// zig build test -Dtest-filters="fuzz parseFromSliceAlloc and formatter" --summary all --fuzz --port 38495
-test "fuzz parseFromSliceAlloc and formatter" {
+// zig build test -Dtest-filters="fuzz parseFromSlice and format" --summary all --fuzz --port 38495
+test "fuzz parseFromSlice and format" {
     const Context = struct {
         fn testOne(_: @This(), input: []const u8) anyerror!void {
             // std.debug.print("{s}\n", .{input});
@@ -1034,8 +1036,8 @@ test "fuzz parseFromSliceAlloc and formatter" {
     try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = &corpus });
 }
 
-// zig build test -Dtest-filters="fuzz parseFromSlice" --summary all --fuzz --port 38495
-test "fuzz parseFromSlice" {
+// zig build test -Dtest-filters="fuzz parseFromSlice(T)" --summary all --fuzz --port 38495
+test "fuzz parseFromSlice(T)" {
     const Context = struct {
         fn testOne(_: @This(), input: []const u8) anyerror!void {
             const tc = edn.parseFromSlice(TestCase, @ptrCast(input), topts, .{}) catch |e| {

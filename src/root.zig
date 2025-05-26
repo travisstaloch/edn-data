@@ -97,6 +97,7 @@ pub const Value = union(Value.Tag) {
     vector: List,
     set: List,
     map: List,
+    userdata: *anyopaque,
 
     pub const Tag = enum(u8) {
         nil,
@@ -114,6 +115,8 @@ pub const Value = union(Value.Tag) {
         vector,
         set,
         map,
+        // end containers
+        userdata,
     };
 
     pub const List = struct {
@@ -168,6 +171,7 @@ pub const Value = union(Value.Tag) {
                     const bhash = bctx.hash(b);
                     break :blk ahash == bhash;
                 },
+                .userdata => unreachable,
                 // else => std.debug.panic("TODO {s}", .{@tagName(a.*)}),
             };
     }
@@ -177,7 +181,8 @@ pub const Value = union(Value.Tag) {
     }
 
     pub fn isContainer(v: Value) bool {
-        return @intFromEnum(@as(Tag, v)) >= @intFromEnum(Tag.list);
+        const i = @intFromEnum(@as(Tag, v));
+        return i >= @intFromEnum(Tag.list) and i < @intFromEnum(Tag.userdata);
     }
 
     pub fn listAt(v: *const Value, index: usize, result: Result) *const Value {
@@ -209,6 +214,7 @@ pub const MapContext = struct {
                 hptr.update(tagged.tag.src(self.src));
                 self.hashValue(tagged.value, hptr);
             },
+            .userdata => unreachable,
             // else => std.debug.panic("TODO {s}", .{@tagName(v.*)}),
         }
     }
@@ -813,6 +819,7 @@ fn formatValue(
             }
             try writer.writeAll(data.src[l.trailing_ws[0]..l.trailing_ws[1]]);
         },
+        .userdata => try writer.writeAll("__userdata__"),
     }
 }
 
