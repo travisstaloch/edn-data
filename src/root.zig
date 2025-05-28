@@ -468,7 +468,7 @@ pub fn parseFromSliceBuf(
     const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, id, options);
     if (options.allocate) p.res.items(.values, id).* = .{ .list = list };
 
-    debug("shape.values {} parsed values count {} top level count {}", .{
+    if (TRACE) trace("shape.values {} parsed values count {} top level count {}", .{
         shape.capacity,
         p.res.values.items.len,
         list.len,
@@ -527,7 +527,7 @@ pub inline fn parseFromSliceComptime(
     comptime {
         @setEvalBranchQuota(comptime_options.eval_branch_quota);
         const shape = try measure(src, options, comptime_options);
-        debug("parseFromSliceComptime cap {}", .{shape.capacity});
+        if (TRACE) trace("parseFromSliceComptime cap {}", .{shape.capacity});
         var arrays: shape.Arrays() = undefined;
         return try parseFromSliceBuf(src, shape, arrays.buffers(), options, comptime_options);
     }
@@ -610,7 +610,7 @@ fn parseType(
                     return error.InvalidUnion;
                 },
             };
-            debug("{s: <[1]}parseType union key {2s}", .{ "", p.depth * 2, @tagName(field) });
+            if (TRACE) trace("{s: <[1]}parseType union key {2s}", .{ "", p.depth * 2, @tagName(field) });
             const u = switch (field) {
                 inline else => |tag| @unionInit(
                     T,
@@ -662,7 +662,7 @@ fn parseType(
         .@"enum" => blk: {
             const t = try expectNext(.keyword, error.InvalidEnum, p);
             const key = Value{ .keyword = t };
-            debug("enum key {s}", .{key.keyword.src(p.tokenizer.src)});
+            if (TRACE) trace("enum key {s}", .{key.keyword.src(p.tokenizer.src)});
             break :blk std.meta.stringToEnum(T, key.keyword.src(p.tokenizer.src)[1..]) orelse
                 error.InvalidEnum;
         },
@@ -683,8 +683,8 @@ fn parseStruct(comptime T: type, p: *Parser, options: Options) !T {
     const Fe = std.meta.FieldEnum(T);
     var seen_fields = std.enums.EnumSet(Fe).initEmpty();
 
-    debug("{s: <[1]}parseStruct({2s})", .{ "", p.depth * 2, @typeName(T) });
-    defer debug("{s: <[1]}<parseStruct({2s})", .{ "", p.depth * 2, @typeName(T) });
+    if (TRACE) trace("{s: <[1]}parseStruct({2s})", .{ "", p.depth * 2, @typeName(T) });
+    defer if (TRACE) trace("{s: <[1]}<parseStruct({2s})", .{ "", p.depth * 2, @typeName(T) });
     p.depth += 1;
     defer p.depth -= 1;
     _ = try expectNext(.lcurly, error.InvalidStruct, p);
@@ -693,7 +693,7 @@ fn parseStruct(comptime T: type, p: *Parser, options: Options) !T {
 
     while (true) {
         const c = p.tokenizer.next();
-        debug("{s: <[1]}parseStruct '{2s}'", .{ "", p.depth * 2, @tagName(c.tag) });
+        if (TRACE) trace("{s: <[1]}parseStruct '{2s}'", .{ "", p.depth * 2, @tagName(c.tag) });
         if (c.tag == .rcurly) break;
 
         const field = switch (c.tag) {
@@ -704,7 +704,7 @@ fn parseStruct(comptime T: type, p: *Parser, options: Options) !T {
             },
             else => return error.InvalidStruct,
         };
-        debug("{s: <[1]}parseStruct key {2s}", .{ "", p.depth * 2, @tagName(field) });
+        if (TRACE) trace("{s: <[1]}parseStruct key {2s}", .{ "", p.depth * 2, @tagName(field) });
 
         switch (field) {
             inline else => |tag| {
@@ -834,14 +834,14 @@ fn consume(tag: Token.Tag, p: *Parser) ?Token {
 fn expectNext(tag: Token.Tag, e: Error, p: *Parser) Error!Token {
     const t = p.tokenizer.next();
     if (t.tag != tag) {
-        debug("expectNext wanted '{s}' got '{s}'", .{ @tagName(tag), t.tag.lexeme() });
+        if (TRACE) trace("expectNext wanted '{s}' got '{s}'", .{ @tagName(tag), t.tag.lexeme() });
         return e;
     }
     return t;
 }
 
 fn parseInt(p: *Parser, t: Token) !Value {
-    debug("{s: <[1]}parseInt('{2s}')", .{ "", p.depth * 2, t.src(p.tokenizer.src) });
+    if (TRACE) trace("{s: <[1]}parseInt('{2s}')", .{ "", p.depth * 2, t.src(p.tokenizer.src) });
     assert(t.tag == .int);
     return;
 }
@@ -851,7 +851,7 @@ fn parseInt(p: *Parser, t: Token) !Value {
 // represented with \uNNNN as in Java. Backslash cannot be followed by
 // whitespace.
 fn parseChar(p: *Parser, t: Token) !Value {
-    debug("{s: <[1]}parseChar()", .{ "", p.depth * 2 });
+    if (TRACE) trace("{s: <[1]}parseChar()", .{ "", p.depth * 2 });
     assert(t.tag == .char);
     const src0 = t.loc.src(p.tokenizer.src);
     assert(src0[0] == '\\');
@@ -882,7 +882,7 @@ fn parseChar(p: *Parser, t: Token) !Value {
         },
         else => return error.InvalidChar,
     };
-    debug("{s: <[1]}parseChar() result {2}:'{2u}'", .{ "", p.depth * 2, char });
+    if (TRACE) trace("{s: <[1]}parseChar() result {2}:'{2u}'", .{ "", p.depth * 2, char });
 
     return .{ .character = char };
 }
@@ -890,7 +890,7 @@ fn parseChar(p: *Parser, t: Token) !Value {
 fn addValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options: Options) Value.Id {
     const id: Value.Id = @enumFromInt(p.res.values.items.len);
     if (options.allocate) {
-        debug("{s: <[1]}storeValue('{2s}') id {3}", .{ "", p.depth * 2, loc.src(p.tokenizer.src), id });
+        if (TRACE) trace("{s: <[1]}storeValue('{2s}') id {3}", .{ "", p.depth * 2, loc.src(p.tokenizer.src), id });
         p.res.values.appendAssumeCapacity(v);
         if (options.whitespace) p.res.whitespaces.appendAssumeCapacity(.{ loc.ws_start, loc.start });
         p.res.siblings.appendAssumeCapacity(.null);
@@ -948,7 +948,7 @@ fn parseList(
     outer: while (true) : (list.len += 1) {
         for (0..options.stride) |_| {
             const t = p.tokenizer.next();
-            // debug("{s: <[1]}parseList('{2s}') {3}", .{ "", p.depth * 2, t.src(p.tokenizer.src), t.tag });
+            //if(include_debug) debug("{s: <[1]}parseList('{2s}') {3}", .{ "", p.depth * 2, t.src(p.tokenizer.src), t.tag });
             if (t.tag == end_tag) {
                 list.trailing_ws = .{ t.loc.ws_start, t.loc.end };
                 p.last_token = t;
@@ -1027,7 +1027,7 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!s
 
 fn parseValueInner(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!struct { Value.Id, Value } {
     // std.debug.print("{s: <[1]}{2s}:\n  ws '{3s}'\n  content '{4s}'\n", .{ "", p.depth * 2, t.tag.lexeme(), p.tokenizer.src[t.loc.ws_start..t.loc.start], t.src(p.tokenizer.src) });
-    debug("{s: <[1]}parseValueInner('{2s}')", .{ "", p.depth * 2, t.src(p.tokenizer.src) });
+    if (TRACE) trace("{s: <[1]}parseValueInner('{2s}')", .{ "", p.depth * 2, t.src(p.tokenizer.src) });
     if (p.last_token.loc.end == t.loc.start and
         !t.tag.isClosing() and
         !p.last_token.tag.isOpening())
@@ -1056,7 +1056,7 @@ fn parseValueInner(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Er
                 .end = t3.loc.end,
             } };
             p.last_token = tmerged;
-            debug("{s: <[1]}discarded {2s} '{3s}' merged ws '{4s}'", .{ "", p.depth * 2, @tagName(discard), t2.src(p.tokenizer.src), p.tokenizer.src[tmerged.loc.ws_start..tmerged.loc.start] });
+            if (TRACE) trace("{s: <[1]}discarded {2s} '{3s}' merged ws '{4s}'", .{ "", p.depth * 2, @tagName(discard), t2.src(p.tokenizer.src), p.tokenizer.src[tmerged.loc.ws_start..tmerged.loc.start] });
             return try p.parseValue(tmerged, parent, options);
         },
         .tagged => {
@@ -1216,8 +1216,9 @@ fn writeFromJsonInner(v: std.json.Value, writer: anytype, options: StringifyOpti
     }
 }
 
+const TRACE = false;
 const log = std.log.scoped(.edn);
-fn debug(comptime fmt: []const u8, args: anytype) void {
+fn trace(comptime fmt: []const u8, args: anytype) void {
     _ = fmt; // autofix
     _ = args; // autofix
     if (@inComptime()) {
