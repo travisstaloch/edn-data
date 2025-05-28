@@ -87,8 +87,8 @@ fn testParseOptions(src: [:0]const u8, options: edn.Options) !void {
     defer result.deinit(options.allocator.?);
     if (false and options.whitespace) {
         for (0..result.values.items.len) |i| {
-            const ws = result.items(.whitespace, i).*;
-            const v = result.items(.values, i).*;
+            const ws = result.whitespaces.items[i];
+            const v = result.values.items[i];
             std.debug.print("{} {s} '{s}'", .{ i, @tagName(v), src[ws[0]..ws[1]] });
             switch (v) {
                 inline .list, .vector, .set, .map => |p| {
@@ -938,6 +938,10 @@ test "fuzz adverse cases" {
     try testing.expectError(error.ExtraInput, testParseOptions(
         \\ #MyYelpClone/MenuItem} {:name "egsH-^en+diclt" :Pati0dg 10}
     , topts));
+    var diag: edn.Diagnostic = .{};
+    try testParseOptions(
+        \\{:search_metadata {:completed_in 0.087 :max_id 505874924095815700 :max_id_str "505874924095815681" :next_results "?max_id=505874847260352512&q=%E4%B8%80&count=100&include_entities=1" :query "%E4%B8%80" :refresh_url "?since_id=505874924095815681&q=%E4%B8%80&include_entities=1" :count 100 :since_id 0 :since_id_str "0"}}
+    , topts.with(.{ .diagnostic = &diag }));
 }
 
 test "parseFromSlice demo with Diagnostic" {

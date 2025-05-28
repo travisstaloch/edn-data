@@ -51,6 +51,7 @@ pub const Error = error{
     InvalidStructField,
     MissingFields,
     InvalidToken,
+    InvalidChar,
     InvalidString,
     InvalidUnion,
     InvalidBool,
@@ -879,7 +880,7 @@ fn parseChar(p: *Parser, t: Token) !Value {
             assert(mem.eql(u8, src, "newline"));
             break :blk '\n';
         },
-        else => unreachable,
+        else => return error.InvalidChar,
     };
     debug("{s: <[1]}parseChar() result {2}:'{2u}'", .{ "", p.depth * 2, char });
 
@@ -1017,6 +1018,14 @@ pub fn userParseValue(p: *Parser, options: Options) !Value {
 }
 
 fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!struct { Value.Id, Value } {
+    return p.parseValueInner(t, parent, options) catch |e| {
+        @branchHint(.cold);
+        p.writeDiagnostic(e, if (p.tokenizer.index == 0) .{ .tag = .eof, .loc = std.mem.zeroes(Token.Loc) } else p.tokenizer.peek(), options);
+        return e;
+    };
+}
+
+fn parseValueInner(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!struct { Value.Id, Value } {
     // std.debug.print("{s: <[1]}{2s}:\n  ws '{3s}'\n  content '{4s}'\n", .{ "", p.depth * 2, t.tag.lexeme(), p.tokenizer.src[t.loc.ws_start..t.loc.start], t.src(p.tokenizer.src) });
     debug("{s: <[1]}parseValueInner('{2s}')", .{ "", p.depth * 2, t.src(p.tokenizer.src) });
     if (p.last_token.loc.end == t.loc.start and
@@ -1091,7 +1100,7 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!s
     };
 }
 
-fn printDiagnostic(p: *const Parser, e: Error, t: Token, options: Options) void {
+fn writeDiagnostic(p: *const Parser, e: Error, t: Token, options: Options) void {
     if (options.diagnostic) |diag| { // user wants a diagnostic
         diag.* = .{ .line = 0, .column = 0 };
         for (p.tokenizer.src[0..t.loc.start]) |c| {
@@ -1104,7 +1113,7 @@ fn printDiagnostic(p: *const Parser, e: Error, t: Token, options: Options) void 
         }
         var fbs = std.io.fixedBufferStream(&diag.error_message);
         if (diag.file_path) |file_path| {
-            fbs.writer().print("error: {s}:{}:{} {s}. source '{s}'.\n", .{
+            fbs.writer().print("error: {s}: {}:{} {s}. source '{s}'.\n", .{
                 file_path,
                 diag.line,
                 diag.column,
@@ -1120,6 +1129,90 @@ fn printDiagnostic(p: *const Parser, e: Error, t: Token, options: Options) void 
             }) catch {};
         }
         fbs.writer().writeByte(0) catch {};
+    }
+}
+
+pub const StringifyOptions = struct {
+    whitespace: enum {
+        minified,
+        indent_1,
+        indent_2,
+        indent_3,
+        indent_4,
+        indent_8,
+        indent_tab,
+    } = .minified,
+};
+
+fn indent(writer: anytype, options: StringifyOptions, depth: u16) !void {
+    var char: u8 = ' ';
+    const n_chars = switch (options.whitespace) {
+        .minified => return,
+        .indent_1 => 1 * depth,
+        .indent_2 => 2 * depth,
+        .indent_3 => 3 * depth,
+        .indent_4 => 4 * depth,
+        .indent_8 => 8 * depth,
+        .indent_tab => blk: {
+            char = '\t';
+            break :blk depth;
+        },
+    };
+    try writer.writeByte('\n');
+    try writer.writeByteNTimes(char, n_chars);
+}
+
+pub fn writeFromJson(v: std.json.Value, writer: anytype, options: StringifyOptions) !void {
+    try writeFromJsonInner(v, writer, options, 0);
+}
+
+fn writeFromJsonInner(v: std.json.Value, writer: anytype, options: StringifyOptions, depth: u16) !void {
+    switch (v) {
+        .string => |bytes| {
+            try writer.writeAll("\"");
+            var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
+            while (iter.nextCodepoint()) |cp| switch (cp) {
+                '\n' => try writer.writeAll("\\n"),
+                '\r' => try writer.writeAll("\\r"),
+                '\t' => try writer.writeAll("\\t"),
+                '\\' => try writer.writeAll("\\\\"),
+                '"' => try writer.writeAll("\\\""),
+                else => try writer.print("{u}", .{cp}),
+            };
+            try writer.writeAll("\"");
+        },
+        .integer => |i| try std.fmt.formatInt(i, 10, .lower, .{}, writer),
+        .float => |f| {
+            var buf: [256]u8 = undefined; // TODO smaller?
+            try writer.writeAll(try std.fmt.formatFloat(&buf, f, .{ .mode = .decimal }));
+        },
+        .bool => |b| try writer.writeAll(if (b) "true" else "false"),
+        .null => try writer.writeAll("nil"),
+        .object => |o| {
+            try writer.writeAll("{");
+            for (o.unmanaged.keys(), o.unmanaged.values(), 0..) |k, vv, i| {
+                if (i != 0) try writer.writeByte(' ');
+                try indent(writer, options, depth + 1);
+                try writer.writeAll(":");
+                try writer.writeAll(k);
+                try writer.writeByte(' ');
+                try writeFromJsonInner(vv, writer, options, depth + 1);
+            }
+            try indent(writer, options, depth);
+            try writer.writeAll("}");
+        },
+        .array => |a| {
+            try writer.writeAll("[");
+            for (a.items, 0..) |vv, i| {
+                if (i != 0) try writer.writeByte(' ');
+                try indent(writer, options, depth + 1);
+                try writeFromJsonInner(vv, writer, options, depth + 1);
+            }
+            try indent(writer, options, depth);
+            try writer.writeAll("]");
+        },
+        .number_string => |s| try writer.writeAll(s),
+        // else => std.debug.panic("writeJson TODO '{s}'\n", .{@tagName(v)}),
     }
 }
 

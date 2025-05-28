@@ -275,6 +275,7 @@ fn nextInner(self: *Tokenizer) Token {
                 continue :state .comment;
             },
             else => {
+                result.loc.start = self.index;
                 continue :state .start;
             },
         },
@@ -1112,6 +1113,7 @@ test "invalid tokens" {
 fn testLoc(
     expected_src: []const u8,
     comptime srcs: []const [:0]const u8,
+    comptime value_srcs: []const [:0]const u8,
 ) !void {
     comptime var src: [:0]const u8 = &.{};
     inline for (srcs) |s| src = src ++ s;
@@ -1122,15 +1124,11 @@ fn testLoc(
     while (true) : (i += 1) {
         const token = t.next();
         // std.debug.print("{s}: ws '{s}' content '{s}'\n", .{ @tagName(token.tag), token.loc.ws(src), token.loc.src(src) });
-        if (token.tag != .eof) {
-            try testing.expectEqual(2, srcs[i].len);
-            try testing.expectEqualStrings(srcs[i][0..1], token.loc.ws(src));
-            try testing.expectEqualStrings(srcs[i][1..2], token.loc.src(src));
-        } else {
-            try testing.expectEqual(1, srcs[i].len);
-            try testing.expectEqualStrings(srcs[i][0..1], token.loc.ws(src));
-            break;
-        }
+        if (i < value_srcs.len) try testing.expectEqualStrings(value_srcs[i], token.loc.src(src));
+        const ws = token.loc.ws(src);
+        try testing.expectEqualStrings(srcs[i][0..ws.len], ws);
+        try testing.expectEqualStrings(srcs[i][ws.len..], token.loc.src(src));
+        if (token.tag == .eof) break;
     }
 }
 
@@ -1138,9 +1136,15 @@ test "Token.Loc" {
     try testLoc(
         " ( [ ] { } ) ",
         &.{ " (", " [", " ]", " {", " }", " )", " " },
+        &.{},
+    );
+    try testLoc(
+        \\{:search_metadata {:completed_in 0.087 :max_id 505874924095815700 }}
+    ,
+        &.{ "{", ":search_metadata", " {", ":completed_in", " 0.087", " :max_id", " 505874924095815700", " }", "}", "" },
+        &.{ "{", ":search_metadata", "{", ":completed_in", "0.087", ":max_id", "505874924095815700", "}", "}", "" },
     );
 }
-
 const std = @import("std");
 const testing = std.testing;
 const talloc = testing.allocator;
