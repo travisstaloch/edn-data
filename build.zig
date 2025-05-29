@@ -28,43 +28,31 @@ pub fn build(b: *std.Build) void {
     // tests
     const test_step = b.step("test", "Run unit tests");
     const filters = b.option([]const []const u8, "test-filters", "") orelse &.{};
-    {
-        const tests = b.addTest(.{
-            .root_source_file = b.path("src/tests.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        tests.root_module.addImport("extensible-data-notation", mod);
-        tests.filters = filters;
-        const run_tests = b.addRunArtifact(tests);
-        run_tests.has_side_effects = true;
-        test_step.dependOn(&run_tests.step);
-        b.installArtifact(tests);
-    }
-    {
-        // TODO include these in src/tests.zig somehow.  these are included here instead
-        // of in src/tests.zig to avoid a 'file exists in multiple modules' error.
-        const tests = b.addTest(.{
-            .root_source_file = b.path("src/ringbuffer.zig"),
-            .target = target,
-            .optimize = optimize,
-            .name = "test-ringbuffer",
-        });
-        tests.filters = filters;
-        const run_tests = b.addRunArtifact(tests);
-        test_step.dependOn(&run_tests.step);
-        b.installArtifact(tests);
-    }
-    {
-        const tests = b.addTest(.{
-            .root_source_file = b.path("src/Tokenizer.zig"),
-            .target = target,
-            .optimize = optimize,
-            .name = "test-Tokenizer",
-        });
-        tests.filters = filters;
-        const run_tests = b.addRunArtifact(tests);
-        test_step.dependOn(&run_tests.step);
-        b.installArtifact(tests);
-    }
+    const main_tests = try addTest("src/tests.zig", "tests", b, target, optimize, filters, test_step);
+    main_tests.root_module.addImport("extensible-data-notation", mod);
+    _ = try addTest("src/ringbuffer.zig", "test-ringbuffer", b, target, optimize, filters, test_step);
+    _ = try addTest("src/Tokenizer.zig", "test-Tokenizer", b, target, optimize, filters, test_step);
+    _ = try addTest("src/root.zig", "test-root", b, target, optimize, filters, test_step);
+}
+fn addTest(
+    file_path: []const u8,
+    name: []const u8,
+    b: *std.Build,
+    target: anytype,
+    optimize: anytype,
+    filters: anytype,
+    test_step: anytype,
+) !*std.Build.Step.Compile {
+    const tests = b.addTest(.{
+        .root_source_file = b.path(file_path),
+        .target = target,
+        .optimize = optimize,
+        .name = name,
+    });
+    tests.filters = filters;
+    const run_tests = b.addRunArtifact(tests);
+    run_tests.has_side_effects = true;
+    test_step.dependOn(&run_tests.step);
+    b.installArtifact(tests);
+    return tests;
 }

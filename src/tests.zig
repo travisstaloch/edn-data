@@ -978,68 +978,6 @@ test "parseFromSliceBuf demo - runtime no allocation" {
     try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
 }
 
-fn fuzzOne(src: [:0]const u8) !void {
-    const opts = topts.with(.{ .error_on_extra_input = false });
-    {
-        const result = try edn.parseFromSlice(edn.Result, src, opts, .{});
-        defer result.deinit(talloc);
-        const src1 = try std.fmt.allocPrintZ(talloc, "{}", .{result.formatter(src)});
-        defer talloc.free(src1);
-    }
-    {
-        const result = try edn.parseFromSlice(edn.Result, src, opts.with(.{ .whitespace = false }), .{});
-        defer result.deinit(talloc);
-        const src1 = try std.fmt.allocPrintZ(talloc, "{}", .{result.formatter(src)});
-        defer talloc.free(src1);
-    }
-}
-
-// zig build test -Dtest-filters="fuzz parseFromSlice and format" --summary all --fuzz --port 38495
-test "fuzz parseFromSlice and format" {
-    const Context = struct {
-        fn testOne(_: @This(), input: []const u8) anyerror!void {
-            // std.debug.print("{s}\n", .{input});
-            fuzzOne(@ptrCast(input)) catch |e| {
-                if (@import("builtin").is_test and !@import("builtin").fuzz) return;
-                // TODO log input to file
-                std.debug.print("fuzzOne error: {s}\n", .{@errorName(e)});
-                // std.debug.print("{s}\n", .{input});
-                // std.debug.print("{any}\n", .{input});
-                return;
-            };
-        }
-    };
-    const corpus = [_][]const u8{
-        "a (a b c [1 2 3] {:a 1 :b 2})",
-        "{:a 1 :b 2}",
-        \\STR_ESC    #{\" \n \t \\ \r}
-        ,
-        \\KEYWORD    #statez/charset "[a-eg-mo-zA-Z0-9*+!_?%&=<>/.\\-]"
-        ,
-        \\\n       {\i {\l accept symbol_nil nil} symbol nil} ; TODO use #statez/stringset for these
-        \\\t       {\r {\u {\e accept symbol_true nil} symbol nil} symbol nil}
-        \\\f       {\a {\l {\s {\e accept symbol_false nil} symbol nil} symbol nil} symbol nil}
-        ,
-        \\{[1 2 3 4] "tell the people what she wore",
-        \\ [5 6 7 8] "the more you see the more you hate"}
-        ,
-        \\#{:a :b 88 "huat"}
-        ,
-        \\#MyYelpClone/MenuItem {:name "eggs-benedict" :rating 10}
-        ,
-        \\(defrecord MenuItem [name rating])
-        ,
-        \\(clojure.edn/read-string "{:eggs 2 :butter 1 :flour 5}")
-        ,
-        \\42
-        \\3.14159
-        ,
-        \\(:bun :beef-patty 9 "yum!")
-        ,
-    };
-    try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = &corpus });
-}
-
 // zig build test -Dtest-filters="fuzz parseFromSlice(T)" --summary all --fuzz --port 38495
 test "fuzz parseFromSlice(T)" {
     const Context = struct {
