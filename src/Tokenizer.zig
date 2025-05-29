@@ -108,15 +108,69 @@ pub fn next(self: *Tokenizer) Token {
     return tok;
 }
 
-fn tagInc(self: *Tokenizer, tag: Token.Tag, inc: u32, result: *Token) void {
-    result.loc.start = self.index;
-    self.index += inc;
-    result.tag = tag;
+fn combinedEnum(tag_type: type, E1: type, E2: type) type {
+    const e1info = @typeInfo(E1).@"enum";
+    const e2info = @typeInfo(E2).@"enum";
+    var fields: [e1info.fields.len + e2info.fields.len]std.builtin.Type.EnumField = undefined;
+    for (e1info.fields ++ e2info.fields, 0..) |f, i| {
+        fields[i] = .{ .name = f.name, .value = i };
+    }
+    return @Type(.{ .@"enum" = .{
+        .fields = &fields,
+        .tag_type = tag_type,
+        .decls = &.{},
+        .is_exhaustive = true,
+    } });
 }
 
 fn srcAt(self: *Tokenizer, index: u32) u8 {
     const i = self.index + index;
+    // TODO maybe remove branching if it doesn't complicate other code too much
     return if (i <= self.src.len) self.src[i] else 0;
+}
+
+const State = combinedEnum(u8, Token.Tag, enum {
+    start,
+    symbol_slash,
+    symbol_end,
+    keyword_slash,
+    str_escape, // '\\'
+    char_u, // 'u'
+    number,
+    number_dot,
+    float_e,
+    float_e_digit,
+    float_e_sign,
+    ws, // ' '
+    comment, // ';'
+    comment_newline,
+});
+
+/// set result.tag and result.loc.start when state is a valid tag and differs from result.tag.
+/// returns comptime known state for continue.
+fn tx(self: *Tokenizer, comptime state: State, inc: u8, result: *Token) State {
+    if (@intFromEnum(state) < @intFromEnum(State.start)) {
+        const t: Token.Tag = @enumFromInt(@intFromEnum(state));
+        if (result.tag != t) {
+            result.loc.start = self.index;
+            result.tag = t;
+        }
+    }
+    self.index += inc;
+    result.loc.end = self.index;
+    return state;
+}
+
+/// set result.tag and result.loc.start to `tag` when it differs from result.tag.
+/// returns comptime known state for continue.
+fn tx1(self: *Tokenizer, comptime state: State, inc: u8, tag: Token.Tag, result: *Token) State {
+    if (result.tag != tag) {
+        result.tag = tag;
+        result.loc.start = self.index;
+    }
+    self.index += inc;
+    result.loc.end = self.index;
+    return state;
 }
 
 fn nextInner(self: *Tokenizer) Token {
@@ -127,156 +181,72 @@ fn nextInner(self: *Tokenizer) Token {
         .end = start,
     } };
 
-    const State = enum(u8) {
-        start = 0,
-        invalid = 1,
-        symbol,
-        symbol_slash,
-        keyword, // ':'
-        keyword_slash,
-        str, // '"'
-        str_escape, // '\\'
-        char, // '\\'
-        char_u, // 'u'
-        number,
-        number_dot,
-        float,
-        float_e,
-        float_e_digit,
-        float_e_sign,
-        ws, // ' '
-        comment, // ';'
-        comment_newline,
-    };
-
-    state: switch (State.start) {
-        // consume until next whitespace
-        .invalid => switch (self.srcAt(0)) {
-            0, ' ', '\t', '\r', '\n', ',' => {},
-            else => {
-                self.index += 1;
-                continue :state .invalid;
-            },
-        },
+    state: switch (State.start) { // zig fmt: on
+        // inline else => |state| {
+        // // std.debug.print("{s} '{s}'\n", .{@tagName(state), result.src(self.src)});
+        // switch(state) {
         .start => switch (self.srcAt(0)) {
-            0 => self.tagInc(.eof, 0, &result),
-            ' ', '\t', '\r', '\n', ',' => {
-                self.index += 1;
-                continue :state .ws;
-            },
-            '(' => self.tagInc(.lparen, 1, &result),
-            ')' => self.tagInc(.rparen, 1, &result),
-            '[' => self.tagInc(.lbracket, 1, &result),
-            ']' => self.tagInc(.rbracket, 1, &result),
-            '{' => self.tagInc(.lcurly, 1, &result),
-            '}' => self.tagInc(.rcurly, 1, &result),
+            0 => result.tag = .eof,
+            ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.ws, 1, &result),
+            '(' => continue :state self.tx(.lparen, 1, &result),
+            ')' => continue :state self.tx(.rparen, 1, &result),
+            '[' => continue :state self.tx(.lbracket, 1, &result),
+            ']' => continue :state self.tx(.rbracket, 1, &result),
+            '{' => continue :state self.tx(.lcurly, 1, &result),
+            '}' => continue :state self.tx(.rcurly, 1, &result),
             '#' => switch (self.srcAt(1)) {
-                0, ' ', '\t', '\r', '\n', ',' => {
-                    result.tag = .invalid;
-                },
-                '#', ':' => {
-                    self.tagInc(.invalid, 1, &result);
-                    continue :state .invalid;
-                },
-                '{' => {
-                    self.tagInc(.set, 2, &result);
-                },
-                '_' => {
-                    self.tagInc(.discard, 2, &result);
-                },
-                else => {
-                    self.tagInc(.tagged, 1, &result);
-                    continue :state .symbol;
-                },
+                0, ' ', '\t', '\r', '\n', ',' => _ = self.tx(.invalid, 1, &result),
+                '#', ':' => continue :state self.tx(.invalid, 1, &result),
+                '{' => _ = self.tx(.set, 2, &result),
+                '_' => _ = self.tx(.discard, 2, &result),
+                else => continue :state self.tx1(.symbol, 1, .tagged, &result),
             },
-            ';' => {
-                self.index += 1;
-                continue :state .comment;
-            },
-            '"' => {
-                self.tagInc(.str, 1, &result);
-                continue :state .str;
-            },
-            '\\' => {
-                self.tagInc(.char, 1, &result);
-                if (self.srcAt(0) == 'u') {
-                    self.index += 1;
-                    continue :state .char_u;
-                } else continue :state .char;
-            },
+            ';' => continue :state self.tx(.comment, 1, &result),
+            '"' => continue :state self.tx(.str, 1, &result),
+            '\\' => if (self.srcAt(1) == 'u')
+                continue :state self.tx1(.char_u, 2, .char, &result)
+            else
+                continue :state self.tx(.char, 1, &result),
             ':' => switch (self.srcAt(1)) {
-                ':', '/', '#' => {
-                    self.tagInc(.invalid, 1, &result);
-                    continue :state .invalid;
-                },
-                else => {
-                    self.tagInc(.keyword, 1, &result);
-                    continue :state .keyword;
-                },
+                ':', '/', '#' => continue :state self.tx(.invalid, 2, &result),
+                else => continue :state self.tx(.keyword, 1, &result),
             },
             '0' => switch (self.srcAt(1)) {
-                '0'...'9' => {
-                    self.tagInc(.invalid, 1, &result);
-                    continue :state .invalid;
-                },
+                0, ' ', '\t', '\r', '\n', ',', ')', ']', '}' => _ = self.tx(.int, 1, &result),
+                '0'...'9' => continue :state self.tx(.invalid, 2, &result),
                 'e', 'E' => {
-                    self.index += 2;
-                    result.tag = .float;
-                    continue :state .float_e;
+                    continue :state self.tx1(.float_e, 2, .float, &result);
                 },
-                '.' => {
-                    self.index += 2;
-                    result.tag = .float;
-                    continue :state .float;
-                },
-                else => {
-                    self.tagInc(.int, 1, &result);
-                    continue :state .number;
-                },
+                '.' => continue :state self.tx1(.float, 2, .float, &result),
+                // '0'...'9' => continue :state self.tx1(.number, 1, .int, &result),
+                else => continue :state self.tx(.invalid, 1, &result),
             },
-            '1'...'9' => {
-                self.tagInc(.int, 1, &result);
-                continue :state .number;
-            },
+            '1'...'9' => continue :state self.tx1(.number, 1, .int, &result),
             '-', '+' => switch (self.srcAt(1)) {
                 // number if followed by a digit
-                '0'...'9' => {
-                    self.tagInc(.int, 1, &result);
-                    continue :state .number;
-                },
-                else => {
-                    self.tagInc(.symbol, 1, &result);
-                    continue :state .symbol;
-                },
+                '0'...'9' => continue :state self.tx1(.number, 1, .int, &result),
+                else => continue :state self.tx(.symbol, 1, &result),
             },
-            '.' => if (std.ascii.isDigit(self.srcAt(1))) {
-                self.tagInc(.float, 1, &result);
-                continue :state .float;
-            } else {
-                self.tagInc(.symbol, 1, &result);
-                continue :state .symbol;
-            },
+            '.' => if (std.ascii.isDigit(self.srcAt(1)))
+                continue :state self.tx(.float, 1, &result)
+            else
+                continue :state self.tx(.symbol, 1, &result),
             'a'...'z', 'A'...'Z', '*', '!', '_', '?', '%', '&', '=', '<', '>' => {
-                self.tagInc(.symbol, 1, &result);
-                continue :state .symbol;
+                continue :state self.tx(.symbol, 1, &result);
             },
-            else => {
-                self.tagInc(.invalid, 1, &result);
-                continue :state .invalid;
-            },
+            else => continue :state self.tx(.invalid, 1, &result),
+        },
+        // consume until next whitespace or container end
+        .invalid => switch (self.srcAt(0)) {
+            0, ' ', '\t', '\r', '\n', ',', ')', ']', '}' => {},
+            else => continue :state self.tx(.invalid, 1, &result),
         },
         .ws => switch (self.srcAt(0)) {
-            ' ', '\t', '\r', '\n', ',' => {
-                self.index += 1;
-                continue :state .ws;
-            },
-            ';' => {
-                self.index += 1;
-                continue :state .comment;
-            },
+            ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.ws, 1, &result),
+            ';' => continue :state self.tx(.comment, 1, &result),
             else => {
                 result.loc.start = self.index;
-                continue :state .start;
+                continue :state self.tx(.start, 0, &result);
             },
         },
         .symbol => switch (self.srcAt(0)) {
@@ -284,236 +254,165 @@ fn nextInner(self: *Tokenizer) Token {
                 self.index += 1;
                 continue :state .symbol;
             },
-            '/' => {
-                self.index += 1;
-                continue :state .symbol_slash;
-            },
-            else => {},
+            '/' => continue :state self.tx(.symbol_slash, 1, &result),
+            else => continue :state .symbol_end,
         },
         .symbol_slash => switch (self.srcAt(0)) {
             'a'...'z', 'A'...'Z', '*', '!', '_', '?', '%', '&', '=', '<', '>', '+', '-', '.', '0'...'9', '#', ':' => {
-                self.index += 1;
-                continue :state .symbol_slash;
+                continue :state self.tx(.symbol_slash, 1, &result);
             },
-            '/' => {
-                self.index += 1;
-                result.tag = .invalid;
-                continue :state .invalid;
-            },
-            else => {},
+            '/' => continue :state self.tx(.invalid, 1, &result),
+            else => continue :state .symbol_end,
+        },
+        .symbol_end => if (result.tag == .symbol) {
+            // check for special literals
+            const text = self.src[result.loc.start..self.index];
+            if (std.mem.eql(u8, text, "nil")) {
+                result.tag = .nil;
+            } else if (std.mem.eql(u8, text, "true")) {
+                result.tag = .true;
+            } else if (std.mem.eql(u8, text, "false")) {
+                result.tag = .false;
+            } else {
+                // check legal idents if namespace
+                var parts = std.mem.splitScalar(u8, text, '/');
+                while (parts.next()) |part| {
+                    if (part.len == 0)
+                        result.tag = .invalid
+                    else switch (part[0]) {
+                        '#', ':' => result.tag = .invalid,
+                        else => {},
+                    }
+                }
+            }
         },
         .str => switch (self.srcAt(0)) {
-            0 => self.tagInc(.invalid, 0, &result),
+            0 => _ = self.tx(.invalid, 0, &result),
             '"' => self.index += 1,
-            '\\' => {
-                self.index += 1;
-                continue :state .str_escape;
-            },
-            else => {
-                self.index += 1;
-                continue :state .str;
-            },
+            '\\' => continue :state self.tx(.str_escape, 1, &result),
+            else => continue :state self.tx(.str, 1, &result),
         },
         .str_escape => switch (self.srcAt(0)) {
-            '"', 'n', 't', 'r', '\\' => {
-                self.index += 1;
-                continue :state .str;
-            },
-            else => self.tagInc(.invalid, 0, &result),
+            '"', 'n', 't', 'r', '\\' => continue :state self.tx(.str, 1, &result),
+            else => _ = self.tx(.invalid, 0, &result),
         },
         // only accept 1 char or "tab", "space", "return", or "newline"
-        .char => if (self.index < self.src.len) {
-            const slice = self.src[self.index..];
-            if (std.mem.startsWith(u8, slice, "space")) {
-                self.index += 5;
-            } else if (std.mem.startsWith(u8, slice, "newline")) {
-                self.index += 7;
-            } else if (std.mem.startsWith(u8, slice, "tab")) {
-                self.index += 3;
-            } else if (std.mem.startsWith(u8, slice, "return")) {
-                self.index += 6;
-            } else switch (self.srcAt(0)) {
-                0, ' ', '\n', '\t', '\r' => result.tag = .invalid,
-                else => switch (self.srcAt(1)) {
-                    0, ' ', '\n', '\t', '\r', ')', ']', '}', ',' => self.index += 1,
+        .char => if (self.index > self.src.len) continue :state .start else {
+            // read char content into buffer to use integer comparison below
+            const len = "newline".len;
+            var buf = [1]u8{0} ** len;
+            const rest = self.src[self.index..];
+            // std.debug.print("char rest '{s}'\n", .{rest[0..@min(10, rest.len)]});
+            for (0..@min(len, rest.len)) |i| {
+                switch (rest[i]) {
+                    0, ' ', '\n', '\t', '\r' => break,
                     else => {
-                        result.tag = .invalid;
-                        continue :state .invalid;
+                        if (i > 0) switch (rest[i]) {
+                            ')', ']', '}' => break,
+                            else => {},
+                        };
+                        self.index += 1;
+                        buf[i] = rest[i];
                     },
+                }
+            }
+            // std.debug.print("buf '{s}'\n", .{buf});
+            switch (std.mem.readInt(u56, &buf, .big)) {
+                std.mem.readInt(u56, "tab\x00\x00\x00\x00", .big),
+                std.mem.readInt(u56, "space\x00\x00", .big),
+                std.mem.readInt(u56, "return\x00", .big),
+                std.mem.readInt(u56, "newline", .big),
+                => {}, // found tab, space, return or newline: ok
+                else => if (buf[0] != 0 and buf[1] == 0) {} // len == 1: ok
+                else {
+                    result.tag = .invalid;
+                    continue :state .invalid;
                 },
             }
-        } else {
-            result.tag = .invalid;
-            continue :state .invalid;
         },
         .char_u => switch (self.srcAt(0)) {
             0, ' ', '\n', '\t', '\r', ',', ')', ']', '}' => {
                 const len = self.index - result.loc.start;
-                if (len != 2 and len != 6) result.tag = .invalid;
+                if (len == 2 or len == 6) {} // \u or \uNNNN: ok
+                else continue :state self.tx(.invalid, 0, &result);
             },
-            '0'...'9', 'A'...'F', 'a'...'f' => {
-                self.index += 1;
-                continue :state .char_u;
-            },
-            else => {
-                result.tag = .invalid;
-                continue :state .invalid;
-            },
+            '0'...'9', 'A'...'F', 'a'...'f' => continue :state self.tx(.char_u, 1, &result),
+            else => continue :state self.tx(.invalid, 1, &result),
         },
         // TODO An integer can have the suffix N to indicate that arbitrary precision is desired.
         .number => switch (self.srcAt(0)) {
-            '0'...'9' => {
-                self.index += 1;
-                continue :state .number;
-            },
+            '0'...'9' => continue :state self.tx(.number, 1, &result),
             '.' => {
-                result.tag = .float;
                 self.index += 1;
+                result.tag = .float;
                 continue :state .number_dot;
             },
-            'e', 'E' => {
-                result.tag = .float;
-                self.index += 1;
-                continue :state .float_e;
-            },
-            else => {},
+            'e', 'E' => continue :state self.tx(.float_e, 1, &result),
+            else => _ = self.tx(.int, 0, &result),
         },
         // TODO a floating-point number may have the suffix M to indicate that exact precision is desired.
         .number_dot => switch (self.srcAt(0)) {
-            '.' => {
-                result.tag = .invalid;
-                self.index += 1;
-                continue :state .invalid;
-            },
+            '.' => continue :state self.tx(.invalid, 1, &result),
             '0'...'9' => {
                 self.index += 1;
                 continue :state .float;
             },
-            'e', 'E' => {
-                self.index += 1;
-                continue :state .float_e;
-            },
-            else => {},
+            'e', 'E' => continue :state self.tx(.float_e, 1, &result),
+            else => _ = self.tx(.float, 0, &result),
         },
         .float => switch (self.srcAt(0)) {
-            '0'...'9' => {
-                self.index += 1;
-                continue :state .float;
-            },
-            'e', 'E' => {
-                self.index += 1;
-                continue :state .float_e;
-            },
+            '0'...'9' => continue :state self.tx(.float, 1, &result),
+            'e', 'E' => continue :state self.tx(.float_e, 1, &result),
             else => {},
         },
         .float_e => switch (self.srcAt(0)) {
-            '-', '+' => {
-                self.index += 1;
-                continue :state .float_e_sign;
-            },
-            '0'...'9' => {
-                self.index += 1;
-                continue :state .float_e_digit;
-            },
-            else => {
-                result.tag = .invalid;
-                continue :state .invalid;
-            },
+            '-', '+' => continue :state self.tx(.float_e_sign, 1, &result),
+            '0'...'9' => continue :state self.tx(.float_e_digit, 1, &result),
+            else => continue :state self.tx(.invalid, 0, &result),
         },
         .float_e_sign => switch (self.srcAt(0)) {
-            '0'...'9' => {
-                self.index += 1;
-                continue :state .float_e_digit;
-            },
-            else => {
-                result.tag = .invalid;
-                continue :state .invalid;
-            },
+            '0'...'9' => continue :state self.tx(.float_e_digit, 1, &result),
+            else => continue :state self.tx(.invalid, 0, &result),
         },
         .float_e_digit => switch (self.srcAt(0)) {
-            '0'...'9' => {
-                self.index += 1;
-                continue :state .float_e_digit;
-            },
-            0, ' ', '\t', '\r', '\n', ',' => {},
-            else => {
-                self.index += 1;
-                continue :state .invalid;
-            },
+            '0'...'9' => continue :state self.tx(.float_e_digit, 1, &result),
+            0, ' ', '\t', '\r', '\n', ',' => _ = self.tx(.float, 0, &result),
+            else => continue :state self.tx(.invalid, 0, &result),
         },
         // comments may include ws and comments on the next line
         .comment => switch (self.srcAt(0)) {
-            0 => continue :state .start,
-            '\n' => {
-                self.index += 1;
-                continue :state .comment_newline;
-            },
-            else => {
-                self.index += 1;
-                continue :state .comment;
-            },
+            0 => continue :state self.tx(.start, 0, &result),
+            '\n' => continue :state self.tx(.comment_newline, 1, &result),
+            else => continue :state self.tx(.comment, 1, &result),
         },
         .comment_newline => switch (self.srcAt(0)) {
-            else => continue :state .start,
-            ';' => {
-                self.index += 1;
-                continue :state .comment;
-            },
-            ' ', '\t', '\r', '\n', ',' => {
-                self.index += 1;
-                continue :state .comment_newline;
-            },
+            else => continue :state self.tx(.start, 0, &result),
+            ';' => continue :state self.tx(.comment, 1, &result),
+            ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.comment_newline, 1, &result),
         },
         .keyword => switch (self.srcAt(0)) {
             'a'...'z', 'A'...'Z', '0'...'9', '*', '+', '!', '-', '_', '?', '%', '&', '=', '<', '>', '.', ':', '#' => {
-                self.index += 1;
-                continue :state .keyword;
+                continue :state self.tx(.keyword, 1, &result);
             },
-            '/' => {
-                self.index += 1;
-                continue :state .keyword_slash;
-            },
+            '/' => continue :state self.tx(.keyword_slash, 1, &result),
             else => {},
         },
         .keyword_slash => switch (self.srcAt(0)) {
             'a'...'z', 'A'...'Z', '0'...'9', '*', '+', '!', '-', '_', '?', '%', '&', '=', '<', '>', '.', ':', '#' => {
-                self.index += 1;
-                continue :state .keyword_slash;
+                continue :state self.tx(.keyword_slash, 1, &result);
             },
-            '/' => {
-                result.tag = .invalid;
-                self.index += 1;
-                continue :state .invalid;
-            },
+            '/' => continue :state self.tx(.invalid, 1, &result),
             else => {},
         },
+        .tagged, .eof, .int, .nil, .true, .false => unreachable,
+        .lparen, .lcurly, .lbracket, .set, .discard, .rparen, .rbracket, .rcurly => {},
     }
-
-    if (result.tag == .symbol) {
-        // check for special literals
-        const text = self.src[result.loc.start..self.index];
-        if (std.mem.eql(u8, text, "nil")) {
-            result.tag = .nil;
-        } else if (std.mem.eql(u8, text, "true")) {
-            result.tag = .true;
-        } else if (std.mem.eql(u8, text, "false")) {
-            result.tag = .false;
-        } else {
-            // check legal idents if namespace
-            var parts = std.mem.splitScalar(u8, text, '/');
-            while (parts.next()) |part| {
-                if (part.len == 0)
-                    result.tag = .invalid
-                else switch (part[0]) {
-                    '#', ':' => result.tag = .invalid,
-                    else => {},
-                }
-            }
-        }
-    }
+    // }}
+    // zig fmt: on
 
     result.loc.end = @min(self.index, self.src.len);
     result.loc.start = @min(result.loc.start, self.src.len);
+    // std.debug.print("result {s} '{s}'\n", .{ @tagName(result.tag), result.src(self.src) });
     return result;
 }
 
@@ -566,6 +465,10 @@ test "special literals" {
         "nil true false",
         &.{ .nil, .true, .false, .eof },
     );
+}
+
+test "eof" {
+    try expectTokens("", &.{.eof});
 }
 
 test "chars" {
@@ -1006,6 +909,12 @@ test "jorinvo/edn-data tests" {
     try expectTokens("{", &.{ .lcurly, .eof });
     try expectTokens("}", &.{ .rcurly, .eof });
     try expectTokens("#{", &.{ .set, .eof });
+}
+
+test "fuzz edge cases" {
+    try expectTokens(
+        \\STR_*ISC s  #{\" \n \t\\ \r}
+    , &.{ .symbol, .symbol, .set, .char, .char, .invalid, .char, .rcurly, .eof });
 }
 
 test "tagged elements" {
