@@ -146,36 +146,36 @@ const State = combinedEnum(u8, Token.Tag, enum {
     comment_newline,
 });
 
-/// set result.tag and result.loc.start when state is a valid tag and differs from result.tag.
+/// transition to state.
+/// set token.tag (and token.loc.start) to `state` when its a valid tag and differs from token.tag.
 /// returns comptime known state for continue.
-fn tx(self: *Tokenizer, comptime state: State, inc: u8, result: *Token) State {
+fn tx(self: *Tokenizer, comptime state: State, inc: u8, token: *Token) State {
     if (@intFromEnum(state) < @intFromEnum(State.start)) {
         const t: Token.Tag = @enumFromInt(@intFromEnum(state));
-        if (result.tag != t) {
-            result.loc.start = self.index;
-            result.tag = t;
+        if (token.tag != t) {
+            token.loc.start = self.index;
+            token.tag = t;
         }
     }
     self.index += inc;
-    result.loc.end = self.index;
     return state;
 }
 
-/// set result.tag and result.loc.start to `tag` when it differs from result.tag.
+/// transition to state with substitute tag.
+/// set token.tag to `tag` (and token.loc.start) when it differs from token.tag.
 /// returns comptime known state for continue.
-fn tx1(self: *Tokenizer, comptime state: State, inc: u8, tag: Token.Tag, result: *Token) State {
-    if (result.tag != tag) {
-        result.tag = tag;
-        result.loc.start = self.index;
+fn tx1(self: *Tokenizer, comptime state: State, inc: u8, tag: Token.Tag, token: *Token) State {
+    if (token.tag != tag) {
+        token.tag = tag;
+        token.loc.start = self.index;
     }
     self.index += inc;
-    result.loc.end = self.index;
     return state;
 }
 
 fn nextInner(self: *Tokenizer) Token {
     const start = @min(self.src.len, self.index);
-    var result: Token = .{ .tag = .invalid, .loc = .{
+    var r: Token = .{ .tag = .invalid, .loc = .{
         .ws_start = start,
         .start = start,
         .end = start,
@@ -183,70 +183,69 @@ fn nextInner(self: *Tokenizer) Token {
 
     state: switch (State.start) { // zig fmt: on
         // inline else => |state| {
-        // // std.debug.print("{s} '{s}'\n", .{@tagName(state), result.src(self.src)});
+        // // std.debug.print("{s} '{s}'\n", .{@tagName(state), token.src(self.src)});
         // switch(state) {
         .start => switch (self.srcAt(0)) {
-            0 => result.tag = .eof,
-            ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.ws, 1, &result),
-            '(' => continue :state self.tx(.lparen, 1, &result),
-            ')' => continue :state self.tx(.rparen, 1, &result),
-            '[' => continue :state self.tx(.lbracket, 1, &result),
-            ']' => continue :state self.tx(.rbracket, 1, &result),
-            '{' => continue :state self.tx(.lcurly, 1, &result),
-            '}' => continue :state self.tx(.rcurly, 1, &result),
+            0 => r.tag = .eof,
+            ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.ws, 1, &r),
+            '(' => continue :state self.tx(.lparen, 1, &r),
+            ')' => continue :state self.tx(.rparen, 1, &r),
+            '[' => continue :state self.tx(.lbracket, 1, &r),
+            ']' => continue :state self.tx(.rbracket, 1, &r),
+            '{' => continue :state self.tx(.lcurly, 1, &r),
+            '}' => continue :state self.tx(.rcurly, 1, &r),
             '#' => switch (self.srcAt(1)) {
-                0, ' ', '\t', '\r', '\n', ',' => _ = self.tx(.invalid, 1, &result),
-                '#', ':' => continue :state self.tx(.invalid, 1, &result),
-                '{' => _ = self.tx(.set, 2, &result),
-                '_' => _ = self.tx(.discard, 2, &result),
-                else => continue :state self.tx1(.symbol, 1, .tagged, &result),
+                0, ' ', '\t', '\r', '\n', ',' => _ = self.tx(.invalid, 1, &r),
+                '#', ':' => continue :state self.tx(.invalid, 1, &r),
+                '{' => _ = self.tx(.set, 2, &r),
+                '_' => _ = self.tx(.discard, 2, &r),
+                else => continue :state self.tx1(.symbol, 1, .tagged, &r),
             },
-            ';' => continue :state self.tx(.comment, 1, &result),
-            '"' => continue :state self.tx(.str, 1, &result),
+            ';' => continue :state self.tx(.comment, 1, &r),
+            '"' => continue :state self.tx(.str, 1, &r),
             '\\' => if (self.srcAt(1) == 'u')
-                continue :state self.tx1(.char_u, 2, .char, &result)
+                continue :state self.tx1(.char_u, 2, .char, &r)
             else
-                continue :state self.tx(.char, 1, &result),
+                continue :state self.tx(.char, 1, &r),
             ':' => switch (self.srcAt(1)) {
-                ':', '/', '#' => continue :state self.tx(.invalid, 2, &result),
-                else => continue :state self.tx(.keyword, 1, &result),
+                ':', '/', '#' => continue :state self.tx(.invalid, 2, &r),
+                else => continue :state self.tx(.keyword, 1, &r),
             },
             '0' => switch (self.srcAt(1)) {
-                0, ' ', '\t', '\r', '\n', ',', ')', ']', '}' => _ = self.tx(.int, 1, &result),
-                '0'...'9' => continue :state self.tx(.invalid, 2, &result),
+                0, ' ', '\t', '\r', '\n', ',', ')', ']', '}' => _ = self.tx(.int, 1, &r),
+                '0'...'9' => continue :state self.tx(.invalid, 2, &r),
                 'e', 'E' => {
-                    continue :state self.tx1(.float_e, 2, .float, &result);
+                    continue :state self.tx1(.float_e, 2, .float, &r);
                 },
-                '.' => continue :state self.tx1(.float, 2, .float, &result),
-                // '0'...'9' => continue :state self.tx1(.number, 1, .int, &result),
-                else => continue :state self.tx(.invalid, 1, &result),
+                '.' => continue :state self.tx(.float, 2, &r),
+                else => continue :state self.tx(.invalid, 1, &r),
             },
-            '1'...'9' => continue :state self.tx1(.number, 1, .int, &result),
+            '1'...'9' => continue :state self.tx1(.number, 1, .int, &r),
             '-', '+' => switch (self.srcAt(1)) {
                 // number if followed by a digit
-                '0'...'9' => continue :state self.tx1(.number, 1, .int, &result),
-                else => continue :state self.tx(.symbol, 1, &result),
+                '0'...'9' => continue :state self.tx1(.number, 1, .int, &r),
+                else => continue :state self.tx(.symbol, 1, &r),
             },
             '.' => if (std.ascii.isDigit(self.srcAt(1)))
-                continue :state self.tx(.float, 1, &result)
+                continue :state self.tx(.float, 1, &r)
             else
-                continue :state self.tx(.symbol, 1, &result),
+                continue :state self.tx(.symbol, 1, &r),
             'a'...'z', 'A'...'Z', '*', '!', '_', '?', '%', '&', '=', '<', '>' => {
-                continue :state self.tx(.symbol, 1, &result);
+                continue :state self.tx(.symbol, 1, &r);
             },
-            else => continue :state self.tx(.invalid, 1, &result),
+            else => continue :state self.tx(.invalid, 1, &r),
         },
         // consume until next whitespace or container end
         .invalid => switch (self.srcAt(0)) {
             0, ' ', '\t', '\r', '\n', ',', ')', ']', '}' => {},
-            else => continue :state self.tx(.invalid, 1, &result),
+            else => continue :state self.tx(.invalid, 1, &r),
         },
         .ws => switch (self.srcAt(0)) {
-            ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.ws, 1, &result),
-            ';' => continue :state self.tx(.comment, 1, &result),
+            ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.ws, 1, &r),
+            ';' => continue :state self.tx(.comment, 1, &r),
             else => {
-                result.loc.start = self.index;
-                continue :state self.tx(.start, 0, &result);
+                r.loc.start = self.index;
+                continue :state self.tx(.start, 0, &r);
             },
         },
         .symbol => switch (self.srcAt(0)) {
@@ -254,47 +253,53 @@ fn nextInner(self: *Tokenizer) Token {
                 self.index += 1;
                 continue :state .symbol;
             },
-            '/' => continue :state self.tx(.symbol_slash, 1, &result),
+            '/' => continue :state self.tx(.symbol_slash, 1, &r),
             else => continue :state .symbol_end,
         },
         .symbol_slash => switch (self.srcAt(0)) {
             'a'...'z', 'A'...'Z', '*', '!', '_', '?', '%', '&', '=', '<', '>', '+', '-', '.', '0'...'9', '#', ':' => {
-                continue :state self.tx(.symbol_slash, 1, &result);
+                continue :state self.tx(.symbol_slash, 1, &r);
             },
-            '/' => continue :state self.tx(.invalid, 1, &result),
+            '/' => continue :state self.tx(.invalid, 1, &r),
             else => continue :state .symbol_end,
         },
-        .symbol_end => if (result.tag == .symbol) {
+        .symbol_end => if (r.tag == .symbol) {
             // check for special literals
-            const text = self.src[result.loc.start..self.index];
-            if (std.mem.eql(u8, text, "nil")) {
-                result.tag = .nil;
-            } else if (std.mem.eql(u8, text, "true")) {
-                result.tag = .true;
-            } else if (std.mem.eql(u8, text, "false")) {
-                result.tag = .false;
-            } else {
-                // check legal idents if namespace
-                var parts = std.mem.splitScalar(u8, text, '/');
-                while (parts.next()) |part| {
-                    if (part.len == 0)
-                        result.tag = .invalid
-                    else switch (part[0]) {
-                        '#', ':' => result.tag = .invalid,
-                        else => {},
+            const len = "false".len;
+            var buf = [1]u8{0} ** len;
+            const text = self.src[r.loc.start..self.index];
+            const l = @min(buf.len, text.len);
+            @memcpy(buf[0..l], text[0..l]);
+            // std.debug.print("buf '{s}'\n", .{buf});
+            switch (mem.readInt(u40, &buf, .big)) {
+                mem.readInt(u40, "nil\x00\x00", .big) => r.tag = .nil,
+                mem.readInt(u40, "true\x00", .big) => r.tag = .true,
+                mem.readInt(u40, "false", .big) => r.tag = .false,
+                else => if (buf[0] == 0) {
+                    r.tag = .invalid;
+                } else {
+                    // check legal idents if namespace
+                    var parts = mem.splitScalar(u8, text, '/');
+                    while (parts.next()) |part| {
+                        if (part.len == 0)
+                            r.tag = .invalid
+                        else switch (part[0]) {
+                            '#', ':' => r.tag = .invalid,
+                            else => {},
+                        }
                     }
-                }
+                },
             }
         },
         .str => switch (self.srcAt(0)) {
-            0 => _ = self.tx(.invalid, 0, &result),
+            0 => _ = self.tx(.invalid, 0, &r),
             '"' => self.index += 1,
-            '\\' => continue :state self.tx(.str_escape, 1, &result),
-            else => continue :state self.tx(.str, 1, &result),
+            '\\' => continue :state self.tx(.str_escape, 1, &r),
+            else => continue :state self.tx(.str, 1, &r),
         },
         .str_escape => switch (self.srcAt(0)) {
-            '"', 'n', 't', 'r', '\\' => continue :state self.tx(.str, 1, &result),
-            else => _ = self.tx(.invalid, 0, &result),
+            '"', 'n', 't', 'r', '\\' => continue :state self.tx(.str, 1, &r),
+            else => _ = self.tx(.invalid, 0, &r),
         },
         // only accept 1 char or "tab", "space", "return", or "newline"
         .char => if (self.index > self.src.len) continue :state .start else {
@@ -302,8 +307,8 @@ fn nextInner(self: *Tokenizer) Token {
             const len = "newline".len;
             var buf = [1]u8{0} ** len;
             const rest = self.src[self.index..];
-            // std.debug.print("char rest '{s}'\n", .{rest[0..@min(10, rest.len)]});
-            for (0..@min(len, rest.len)) |i| {
+            // read until terminator
+            for (0..@min(buf.len, rest.len)) |i| {
                 switch (rest[i]) {
                     0, ' ', '\n', '\t', '\r' => break,
                     else => {
@@ -316,92 +321,91 @@ fn nextInner(self: *Tokenizer) Token {
                     },
                 }
             }
-            // std.debug.print("buf '{s}'\n", .{buf});
-            switch (std.mem.readInt(u56, &buf, .big)) {
-                std.mem.readInt(u56, "tab\x00\x00\x00\x00", .big),
-                std.mem.readInt(u56, "space\x00\x00", .big),
-                std.mem.readInt(u56, "return\x00", .big),
-                std.mem.readInt(u56, "newline", .big),
+            switch (mem.readInt(u56, &buf, .big)) {
+                mem.readInt(u56, "tab\x00\x00\x00\x00", .big),
+                mem.readInt(u56, "space\x00\x00", .big),
+                mem.readInt(u56, "return\x00", .big),
+                mem.readInt(u56, "newline", .big),
                 => {}, // found tab, space, return or newline: ok
                 else => if (buf[0] != 0 and buf[1] == 0) {} // len == 1: ok
                 else {
-                    result.tag = .invalid;
+                    r.tag = .invalid;
                     continue :state .invalid;
                 },
             }
         },
         .char_u => switch (self.srcAt(0)) {
             0, ' ', '\n', '\t', '\r', ',', ')', ']', '}' => {
-                const len = self.index - result.loc.start;
+                const len = self.index - r.loc.start;
                 if (len == 2 or len == 6) {} // \u or \uNNNN: ok
-                else continue :state self.tx(.invalid, 0, &result);
+                else continue :state self.tx(.invalid, 0, &r);
             },
-            '0'...'9', 'A'...'F', 'a'...'f' => continue :state self.tx(.char_u, 1, &result),
-            else => continue :state self.tx(.invalid, 1, &result),
+            '0'...'9', 'A'...'F', 'a'...'f' => continue :state self.tx(.char_u, 1, &r),
+            else => continue :state self.tx(.invalid, 1, &r),
         },
         // TODO An integer can have the suffix N to indicate that arbitrary precision is desired.
         .number => switch (self.srcAt(0)) {
-            '0'...'9' => continue :state self.tx(.number, 1, &result),
+            '0'...'9' => continue :state self.tx(.number, 1, &r),
             '.' => {
                 self.index += 1;
-                result.tag = .float;
+                r.tag = .float;
                 continue :state .number_dot;
             },
-            'e', 'E' => continue :state self.tx(.float_e, 1, &result),
-            else => _ = self.tx(.int, 0, &result),
+            'e', 'E' => continue :state self.tx(.float_e, 1, &r),
+            else => _ = self.tx(.int, 0, &r),
         },
         // TODO a floating-point number may have the suffix M to indicate that exact precision is desired.
         .number_dot => switch (self.srcAt(0)) {
-            '.' => continue :state self.tx(.invalid, 1, &result),
+            '.' => continue :state self.tx(.invalid, 1, &r),
             '0'...'9' => {
                 self.index += 1;
                 continue :state .float;
             },
-            'e', 'E' => continue :state self.tx(.float_e, 1, &result),
-            else => _ = self.tx(.float, 0, &result),
+            'e', 'E' => continue :state self.tx(.float_e, 1, &r),
+            else => _ = self.tx(.float, 0, &r),
         },
         .float => switch (self.srcAt(0)) {
-            '0'...'9' => continue :state self.tx(.float, 1, &result),
-            'e', 'E' => continue :state self.tx(.float_e, 1, &result),
+            '0'...'9' => continue :state self.tx(.float, 1, &r),
+            'e', 'E' => continue :state self.tx(.float_e, 1, &r),
             else => {},
         },
         .float_e => switch (self.srcAt(0)) {
-            '-', '+' => continue :state self.tx(.float_e_sign, 1, &result),
-            '0'...'9' => continue :state self.tx(.float_e_digit, 1, &result),
-            else => continue :state self.tx(.invalid, 0, &result),
+            '-', '+' => continue :state self.tx(.float_e_sign, 1, &r),
+            '0'...'9' => continue :state self.tx(.float_e_digit, 1, &r),
+            else => continue :state self.tx(.invalid, 0, &r),
         },
         .float_e_sign => switch (self.srcAt(0)) {
-            '0'...'9' => continue :state self.tx(.float_e_digit, 1, &result),
-            else => continue :state self.tx(.invalid, 0, &result),
+            '0'...'9' => continue :state self.tx(.float_e_digit, 1, &r),
+            else => continue :state self.tx(.invalid, 0, &r),
         },
         .float_e_digit => switch (self.srcAt(0)) {
-            '0'...'9' => continue :state self.tx(.float_e_digit, 1, &result),
-            0, ' ', '\t', '\r', '\n', ',' => _ = self.tx(.float, 0, &result),
-            else => continue :state self.tx(.invalid, 0, &result),
+            '0'...'9' => continue :state self.tx(.float_e_digit, 1, &r),
+            0, ' ', '\t', '\r', '\n', ',' => _ = self.tx(.float, 0, &r),
+            else => continue :state self.tx(.invalid, 0, &r),
         },
         // comments may include ws and comments on the next line
         .comment => switch (self.srcAt(0)) {
-            0 => continue :state self.tx(.start, 0, &result),
-            '\n' => continue :state self.tx(.comment_newline, 1, &result),
-            else => continue :state self.tx(.comment, 1, &result),
+            0 => continue :state self.tx(.start, 0, &r),
+            '\n' => continue :state self.tx(.comment_newline, 1, &r),
+            else => continue :state self.tx(.comment, 1, &r),
         },
         .comment_newline => switch (self.srcAt(0)) {
-            else => continue :state self.tx(.start, 0, &result),
-            ';' => continue :state self.tx(.comment, 1, &result),
-            ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.comment_newline, 1, &result),
+            else => continue :state self.tx(.start, 0, &r),
+            ';' => continue :state self.tx(.comment, 1, &r),
+            ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.comment_newline, 1, &r),
         },
         .keyword => switch (self.srcAt(0)) {
             'a'...'z', 'A'...'Z', '0'...'9', '*', '+', '!', '-', '_', '?', '%', '&', '=', '<', '>', '.', ':', '#' => {
-                continue :state self.tx(.keyword, 1, &result);
+                continue :state self.tx(.keyword, 1, &r);
             },
-            '/' => continue :state self.tx(.keyword_slash, 1, &result),
+            '/' => continue :state self.tx(.keyword_slash, 1, &r),
             else => {},
         },
         .keyword_slash => switch (self.srcAt(0)) {
             'a'...'z', 'A'...'Z', '0'...'9', '*', '+', '!', '-', '_', '?', '%', '&', '=', '<', '>', '.', ':', '#' => {
-                continue :state self.tx(.keyword_slash, 1, &result);
+                continue :state self.tx(.keyword_slash, 1, &r);
             },
-            '/' => continue :state self.tx(.invalid, 1, &result),
+            '/' => continue :state self.tx(.invalid, 1, &r),
             else => {},
         },
         .tagged, .eof, .int, .nil, .true, .false => unreachable,
@@ -410,10 +414,10 @@ fn nextInner(self: *Tokenizer) Token {
     // }}
     // zig fmt: on
 
-    result.loc.end = @min(self.index, self.src.len);
-    result.loc.start = @min(result.loc.start, self.src.len);
-    // std.debug.print("result {s} '{s}'\n", .{ @tagName(result.tag), result.src(self.src) });
-    return result;
+    r.loc.end = @min(self.index, self.src.len);
+    r.loc.start = @min(r.loc.start, self.src.len);
+    // std.debug.print("token {s} '{s}'\n", .{ @tagName(r.tag), r.src(self.src) });
+    return r;
 }
 
 pub fn peek(self: *const Tokenizer) Token {
@@ -479,6 +483,8 @@ test "chars" {
         \\\u "hi"
     , &.{ .char, .str, .eof });
     try expectTokens("\\u0 \\u0000", &.{ .invalid, .char, .eof });
+    // try expectTokens("\\), \\], \\}, \\,,", &.{ .char, .char, .char, .char, .eof });
+    // try expectTokens("\\)) \\]] \\}}", &.{ .char, .rparen, .char, .rbracket, .char, .rcurly, .eof });
 }
 
 test "strs" {
@@ -1054,7 +1060,9 @@ test "Token.Loc" {
         &.{ "{", ":search_metadata", "{", ":completed_in", "0.087", ":max_id", "505874924095815700", "}", "}", "" },
     );
 }
+
 const std = @import("std");
 const testing = std.testing;
 const talloc = testing.allocator;
+const mem = std.mem;
 const assert = std.debug.assert;
