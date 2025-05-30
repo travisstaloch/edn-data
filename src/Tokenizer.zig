@@ -313,7 +313,7 @@ fn nextInner(self: *Tokenizer) Token {
                     0, ' ', '\n', '\t', '\r' => break,
                     else => {
                         if (i > 0) switch (rest[i]) {
-                            ')', ']', '}' => break,
+                            ')', ']', '}', ',' => break,
                             else => {},
                         };
                         self.index += 1;
@@ -483,8 +483,8 @@ test "chars" {
         \\\u "hi"
     , &.{ .char, .str, .eof });
     try expectTokens("\\u0 \\u0000", &.{ .invalid, .char, .eof });
-    // try expectTokens("\\), \\], \\}, \\,,", &.{ .char, .char, .char, .char, .eof });
-    // try expectTokens("\\)) \\]] \\}}", &.{ .char, .rparen, .char, .rbracket, .char, .rcurly, .eof });
+    try expectTokens("\\), \\], \\}, \\,,", &.{ .char, .char, .char, .char, .eof });
+    try expectTokens("\\)) \\]] \\}}", &.{ .char, .rparen, .char, .rbracket, .char, .rcurly, .eof });
 }
 
 test "strs" {
