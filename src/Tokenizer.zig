@@ -133,7 +133,6 @@ const State = combinedEnum(u8, Token.Tag, enum {
     start,
     symbol_slash,
     symbol_end,
-    keyword_slash,
     str_escape, // '\\'
     char_u, // 'u'
     char_end,
@@ -181,6 +180,7 @@ fn nextInner(self: *Tokenizer) Token {
         .start = start,
         .end = start,
     } };
+    var symbol_slash = start;
 
     state: switch (State.start) { // zig fmt: on
         // inline else => |state| {
@@ -210,7 +210,7 @@ fn nextInner(self: *Tokenizer) Token {
                 continue :state self.tx(.char, 1, &r),
             ':' => switch (self.srcAt(1)) {
                 ':', '/', '#' => continue :state self.tx(.invalid, 2, &r),
-                else => continue :state self.tx(.keyword, 1, &r),
+                else => continue :state self.tx1(.symbol, 1, .keyword, &r),
             },
             '0' => switch (self.srcAt(1)) {
                 0, ' ', '\t', '\r', '\n', ',', ')', ']', '}' => _ = self.tx(.int, 1, &r),
@@ -254,7 +254,12 @@ fn nextInner(self: *Tokenizer) Token {
                 self.index += 1;
                 continue :state .symbol;
             },
-            '/' => continue :state self.tx(.symbol_slash, 1, &r),
+            '/' => {
+                const len = self.index - r.loc.start - @intFromBool(r.tag == .keyword or r.tag == .tagged);
+                if (len == 0) continue :state self.tx(.invalid, 1, &r);
+                symbol_slash = self.index + 1;
+                continue :state self.tx(.symbol_slash, 1, &r);
+            },
             else => continue :state .symbol_end,
         },
         .symbol_slash => switch (self.srcAt(0)) {
@@ -262,7 +267,12 @@ fn nextInner(self: *Tokenizer) Token {
                 continue :state self.tx(.symbol_slash, 1, &r);
             },
             '/' => continue :state self.tx(.invalid, 1, &r),
-            else => continue :state .symbol_end,
+            else => {
+                const len = self.index - symbol_slash;
+                if (len == 0 or self.src[symbol_slash] == '#' or self.src[symbol_slash] == ':')
+                    continue :state self.tx(.invalid, 0, &r);
+                continue :state .symbol_end;
+            },
         },
         .symbol_end => if (r.tag == .symbol) {
             // check for special literals
@@ -273,17 +283,6 @@ fn nextInner(self: *Tokenizer) Token {
                 r.tag = .true;
             } else if (std.mem.eql(u8, text, "false")) {
                 r.tag = .false;
-            } else {
-                // check legal idents if namespace
-                var parts = std.mem.splitScalar(u8, text, '/');
-                while (parts.next()) |part| {
-                    if (part.len == 0)
-                        r.tag = .invalid
-                    else switch (part[0]) {
-                        '#', ':' => r.tag = .invalid,
-                        else => {},
-                    }
-                }
             }
         },
         .str => switch (self.srcAt(0)) {
@@ -371,21 +370,7 @@ fn nextInner(self: *Tokenizer) Token {
             ';' => continue :state self.tx(.comment, 1, &r),
             ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.comment_newline, 1, &r),
         },
-        .keyword => switch (self.srcAt(0)) {
-            'a'...'z', 'A'...'Z', '0'...'9', '*', '+', '!', '-', '_', '?', '%', '&', '=', '<', '>', '.', ':', '#' => {
-                continue :state self.tx(.keyword, 1, &r);
-            },
-            '/' => continue :state self.tx(.keyword_slash, 1, &r),
-            else => {},
-        },
-        .keyword_slash => switch (self.srcAt(0)) {
-            'a'...'z', 'A'...'Z', '0'...'9', '*', '+', '!', '-', '_', '?', '%', '&', '=', '<', '>', '.', ':', '#' => {
-                continue :state self.tx(.keyword_slash, 1, &r);
-            },
-            '/' => continue :state self.tx(.invalid, 1, &r),
-            else => {},
-        },
-        .tagged, .eof, .int, .nil, .true, .false => unreachable,
+        .tagged, .eof, .int, .nil, .true, .false, .keyword => unreachable,
         .lparen, .lcurly, .lbracket, .set, .discard, .rparen, .rbracket, .rcurly => unreachable,
     }
     // }}
