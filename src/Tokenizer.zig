@@ -180,7 +180,7 @@ fn nextInner(self: *Tokenizer) Token {
         .start = start,
         .end = start,
     } };
-    var symbol_slash = start;
+    var symbol_slash: u32 = start;
 
     state: switch (State.start) { // zig fmt: on
         // inline else => |state| {

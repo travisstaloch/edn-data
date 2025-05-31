@@ -1254,10 +1254,10 @@ test "fuzz parseFromSlice and format" {
         log_to_file: bool = false,
         fn testOne(c: @This(), input: []const u8) anyerror!void {
             if (c.log_to_file) try c.f.writer().print("{s}\n\n", .{input});
-            fuzzOne(@ptrCast(input)) catch |e| {
+            fuzzOne(@ptrCast(input)) catch {
                 if (@import("builtin").is_test and !@import("builtin").fuzz) return;
                 // TODO log input to file
-                std.debug.print("fuzzOne error: {s}\n", .{@errorName(e)});
+                // std.debug.print("fuzzOne error: {s}\n", .{@errorName(e)});
                 // std.debug.print("{s}\n", .{input});
                 // std.debug.print("{any}\n", .{input});
                 return;

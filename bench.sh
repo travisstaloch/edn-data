@@ -13,7 +13,7 @@ zig build --release=fast
 
 POOP=../poop/zig-out/bin/poop
 
-if false; then
+if true; then
   curl -fsS -o /tmp/msft.json https://microsoftedge.github.io/Demos/json-dummy-data/64KB.json
   zig-out/bin/edn-parse --json-to-edn /tmp/msft.json > /tmp/msft.edn
   $POOP -d 3000 'zig-out/bin/edn-bench --json /tmp/msft.json' 'zig-out/bin/edn-bench /tmp/msft.edn'
