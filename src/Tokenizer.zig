@@ -136,6 +136,7 @@ const State = combinedEnum(u8, Token.Tag, enum {
     keyword_slash,
     str_escape, // '\\'
     char_u, // 'u'
+    char_end,
     number,
     number_dot,
     float_e,
@@ -265,30 +266,24 @@ fn nextInner(self: *Tokenizer) Token {
         },
         .symbol_end => if (r.tag == .symbol) {
             // check for special literals
-            const len = "false".len;
-            var buf = [1]u8{0} ** len;
             const text = self.src[r.loc.start..self.index];
-            const l = @min(buf.len, text.len);
-            @memcpy(buf[0..l], text[0..l]);
-            // std.debug.print("buf '{s}'\n", .{buf});
-            switch (mem.readInt(u40, &buf, .big)) {
-                mem.readInt(u40, "nil\x00\x00", .big) => r.tag = .nil,
-                mem.readInt(u40, "true\x00", .big) => r.tag = .true,
-                mem.readInt(u40, "false", .big) => r.tag = .false,
-                else => if (buf[0] == 0) {
-                    r.tag = .invalid;
-                } else {
-                    // check legal idents if namespace
-                    var parts = mem.splitScalar(u8, text, '/');
-                    while (parts.next()) |part| {
-                        if (part.len == 0)
-                            r.tag = .invalid
-                        else switch (part[0]) {
-                            '#', ':' => r.tag = .invalid,
-                            else => {},
-                        }
+            if (std.mem.eql(u8, text, "nil")) {
+                r.tag = .nil;
+            } else if (std.mem.eql(u8, text, "true")) {
+                r.tag = .true;
+            } else if (std.mem.eql(u8, text, "false")) {
+                r.tag = .false;
+            } else {
+                // check legal idents if namespace
+                var parts = std.mem.splitScalar(u8, text, '/');
+                while (parts.next()) |part| {
+                    if (part.len == 0)
+                        r.tag = .invalid
+                    else switch (part[0]) {
+                        '#', ':' => r.tag = .invalid,
+                        else => {},
                     }
-                },
+                }
             }
         },
         .str => switch (self.srcAt(0)) {
@@ -302,37 +297,19 @@ fn nextInner(self: *Tokenizer) Token {
             else => _ = self.tx(.invalid, 0, &r),
         },
         // only accept 1 char or "tab", "space", "return", or "newline"
-        .char => if (self.index > self.src.len) continue :state .start else {
-            // read char content into buffer to use integer comparison below
-            const len = "newline".len;
-            var buf = [1]u8{0} ** len;
-            const rest = self.src[self.index..];
-            // read until terminator
-            for (0..@min(buf.len, rest.len)) |i| {
-                switch (rest[i]) {
-                    0, ' ', '\n', '\t', '\r' => break,
-                    else => {
-                        if (i > 0) switch (rest[i]) {
-                            ')', ']', '}', ',' => break,
-                            else => {},
-                        };
-                        self.index += 1;
-                        buf[i] = rest[i];
-                    },
-                }
-            }
-            switch (mem.readInt(u56, &buf, .big)) {
-                mem.readInt(u56, "tab\x00\x00\x00\x00", .big),
-                mem.readInt(u56, "space\x00\x00", .big),
-                mem.readInt(u56, "return\x00", .big),
-                mem.readInt(u56, "newline", .big),
-                => {}, // found tab, space, return or newline: ok
-                else => if (buf[0] != 0 and buf[1] == 0) {} // len == 1: ok
-                else {
-                    r.tag = .invalid;
-                    continue :state .invalid;
-                },
-            }
+        .char => switch (self.srcAt(0)) {
+            0, ' ', '\n', '\t', '\r' => continue :state .char_end,
+            ')', ']', '}', ',' => continue :state self.tx(.char_end, @intFromBool(r.loc.start + 1 == self.index), &r),
+            else => continue :state self.tx(.char, 1, &r),
+        },
+        .char_end => {
+            // check for special literals
+            const text = self.src[r.loc.start..self.index][1..];
+            if (!(text.len == 1 or std.mem.eql(u8, text, "tab") or
+                std.mem.eql(u8, text, "space") or
+                std.mem.eql(u8, text, "return") or
+                std.mem.eql(u8, text, "newline")))
+                r.tag = .invalid;
         },
         .char_u => switch (self.srcAt(0)) {
             0, ' ', '\n', '\t', '\r', ',', ')', ']', '}' => {
@@ -1023,6 +1000,7 @@ test "invalid tokens" {
     try expectTokens("\\invalid-char-name", &.{ .invalid, .eof });
     try expectTokens("\\u123z", &.{ .invalid, .eof });
     try expectTokens("##foo", &.{ .invalid, .eof });
+    try expectTokens("\\", &.{ .invalid, .eof });
 }
 
 fn testLoc(
