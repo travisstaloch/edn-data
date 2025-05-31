@@ -61,6 +61,7 @@ pub const Error = error{
     InvalidFloat,
     UnclosedContainer,
     ExtraInput,
+    InvalidInput,
     AllocatorRequired,
 } ||
     Allocator.Error ||

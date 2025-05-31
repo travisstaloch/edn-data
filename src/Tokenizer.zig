@@ -95,6 +95,7 @@ pub const Token = struct {
 };
 
 pub fn init(src: [:0]const u8) !Tokenizer {
+    if (src[src.len] != 0) return error.InvalidInput;
     if (!std.unicode.utf8ValidateSlice(src)) return error.InvalidUTF8;
     var self: Tokenizer = .{ .src = src };
     for (0..lookbehind_len) |_| self.lookbehind.push(self.nextInner()) catch unreachable;
@@ -125,8 +126,7 @@ fn combinedEnum(tag_type: type, E1: type, E2: type) type {
 
 fn srcAt(self: *Tokenizer, index: u32) u8 {
     const i = self.index + index;
-    // TODO maybe remove branching if it doesn't complicate other code too much
-    return if (i <= self.src.len) self.src[i] else 0;
+    return self.src[i];
 }
 
 const State = combinedEnum(u8, Token.Tag, enum {
@@ -184,17 +184,17 @@ fn nextInner(self: *Tokenizer) Token {
 
     state: switch (State.start) { // zig fmt: on
         // inline else => |state| {
-        // // std.debug.print("{s} '{s}'\n", .{@tagName(state), token.src(self.src)});
+        // // std.debug.print("{s} '{s}' {}/{}/{}\n", .{@tagName(state), self.src[r.loc.ws_start..self.index], self.index, self.src.len, self.srcAt(0)});
         // switch(state) {
         .start => switch (self.srcAt(0)) {
             0 => r.tag = .eof,
             ' ', '\t', '\r', '\n', ',' => continue :state self.tx(.ws, 1, &r),
-            '(' => continue :state self.tx(.lparen, 1, &r),
-            ')' => continue :state self.tx(.rparen, 1, &r),
-            '[' => continue :state self.tx(.lbracket, 1, &r),
-            ']' => continue :state self.tx(.rbracket, 1, &r),
-            '{' => continue :state self.tx(.lcurly, 1, &r),
-            '}' => continue :state self.tx(.rcurly, 1, &r),
+            '(' => _ = self.tx(.lparen, 1, &r),
+            ')' => _ = self.tx(.rparen, 1, &r),
+            '[' => _ = self.tx(.lbracket, 1, &r),
+            ']' => _ = self.tx(.rbracket, 1, &r),
+            '{' => _ = self.tx(.lcurly, 1, &r),
+            '}' => _ = self.tx(.rcurly, 1, &r),
             '#' => switch (self.srcAt(1)) {
                 0, ' ', '\t', '\r', '\n', ',' => _ = self.tx(.invalid, 1, &r),
                 '#', ':' => continue :state self.tx(.invalid, 1, &r),
@@ -386,7 +386,7 @@ fn nextInner(self: *Tokenizer) Token {
             else => {},
         },
         .tagged, .eof, .int, .nil, .true, .false => unreachable,
-        .lparen, .lcurly, .lbracket, .set, .discard, .rparen, .rbracket, .rcurly => {},
+        .lparen, .lcurly, .lbracket, .set, .discard, .rparen, .rbracket, .rcurly => unreachable,
     }
     // }}
     // zig fmt: on
