@@ -33,7 +33,18 @@ pub fn build(b: *std.Build) void {
     _ = try addTest("src/ringbuffer.zig", "test-ringbuffer", b, target, optimize, filters, test_step);
     _ = try addTest("src/Tokenizer.zig", "test-Tokenizer", b, target, optimize, filters, test_step);
     _ = try addTest("src/root.zig", "test-root", b, target, optimize, filters, test_step);
+
+    // bench
+    const bench = b.addExecutable(.{
+        .name = "edn-bench",
+        .root_source_file = b.path("src/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench.root_module.addImport("extensible-data-notation", mod);
+    b.installArtifact(bench);
 }
+
 fn addTest(
     file_path: []const u8,
     name: []const u8,
