@@ -2,7 +2,7 @@
 
 tokenizer: Tokenizer,
 res: Result,
-depth: u8, // only used when logging
+depth: u16,
 handlers: TaggedElementHandler.Map,
 /// the last token seen.  used to track required whitespace between tokens.
 last_token: Token = .{
@@ -62,6 +62,7 @@ pub const Error = error{
     UnclosedContainer,
     ExtraInput,
     InvalidInput,
+    Depth,
     AllocatorRequired,
 } ||
     Allocator.Error ||
@@ -364,7 +365,7 @@ pub const Result = struct {
     }
 };
 
-pub const Options = struct {
+pub const Options = struct { // TODO use packed struct and workaround compiler issues here
     userdata: ?*anyopaque = null,
     /// when set line and column will be populated on error and an error message
     /// with format <file_path>:<line>:<column> will be printed to diagnostic.error_message.
@@ -373,7 +374,7 @@ pub const Options = struct {
     allocator: ?Allocator = null,
     /// whether to save whitespace.  when false ParseResult.whitespaces will be
     /// empty and each whitespace will be formatted as a single space.
-    whitespace: bool = true,
+    preserve_whitespace: bool = true,
     // TODO possibly merge store and allocate?
     /// false to measure by updating result lengths without allocating.
     allocate: bool = true,
@@ -383,6 +384,8 @@ pub const Options = struct {
     store: bool = true,
     /// stride = 2 is used to parse maps
     stride: u6 = 1,
+    /// when true make sure the last token is eof.  only used when parsing
+    /// structured input instead of non-arbitrary input as with edn.Result.
     error_on_extra_input: bool = true,
 
     /// returns a copy of 'self' with fields from 'other' which don't have their default value.
@@ -443,8 +446,9 @@ pub fn measure(
 ) !Shape {
     var p = try Parser.init(src, comptime_options.handlers);
     const opts = options.with(.{ .allocate = false });
-    const id = addValue(&p, .zero, .{ .list = .{} }, null, opts);
+    const id = addValue(&p, .{ .tag = .lparen, .loc = .zero }, .{ .list = .{} }, .null, opts);
     const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, id, opts);
+    if (TRACE) trace("measure {}", .{p.res.values.items.len});
     return .{
         .capacity = @intCast(p.res.values.items.len),
         .top_level_values = @intCast(list.len),
@@ -464,26 +468,17 @@ pub fn parseFromSliceBuf(
     comptime comptime_options: ComptimeOptions,
 ) !Result {
     var p = try Parser.initFixed(src, buffers, comptime_options.handlers);
-    const id = addValue(&p, .zero, .{ .list = .{} }, null, options);
+    const id = addValue(&p, .{ .tag = .lparen, .loc = .zero }, .{ .list = .{} }, .null, options);
     if (src.len == 0) return p.res;
     const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, id, options);
     if (options.allocate) p.res.items(.values, id).* = .{ .list = list };
 
-    if (TRACE) trace("shape.values {} parsed values count {} top level count {}", .{
-        shape.capacity,
-        p.res.values.items.len,
-        list.len,
-    });
+    if (TRACE) trace("shape.values {} parsed values count {} top level count {}", .{ shape.capacity, p.res.values.items.len, list.len });
 
-    if (options.error_on_extra_input and
-        p.tokenizer.index != 0 and p.tokenizer.peek().tag != .eof)
-    {
-        // std.debug.print("src {s}\n{any}\nres.values.items.len {}\n{}", .{ src, src, p.res.values.items.len, p.res.formatter(src) });
-        // for (p.res.values.items) |item| {
-        //     std.debug.print("{s}\n", .{@tagName(item)});
-        // }
+    // TODO should this be assert(last_token.tag == .eof) instead of an error?
+    if (p.tokenizer.index != 0 and p.tokenizer.peek().tag != .eof)
         return error.ExtraInput;
-    }
+
     return p.res;
 }
 
@@ -497,7 +492,7 @@ fn parseFromSliceAlloc(
 
     const values = try allocator.alloc(Value, shape.capacity);
     errdefer allocator.free(values);
-    const whitespaces: []Span = if (options.whitespace)
+    const whitespaces: []Span = if (options.preserve_whitespace)
         try allocator.alloc(Span, shape.capacity)
     else
         &.{};
@@ -578,7 +573,7 @@ fn parseType(
         const tag = p.tokenizer.next();
 
         const tagged = p.tokenizer.next();
-        _, const next = try p.parseValue(tagged, null, options);
+        _, const next = try p.parseValue(tagged, .null, options);
         if (P) |Parent| {
             comptime assert(isContainer(Parent));
             if (@hasDecl(Parent, "ednTagHandler")) {
@@ -888,14 +883,14 @@ fn parseChar(p: *Parser, t: Token) !Value {
     return .{ .character = char };
 }
 
-fn addValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options: Options) Value.Id {
+fn addValue(p: *Parser, t: Token, v: Value, parent: Value.Id, options: Options) Value.Id {
     const id: Value.Id = @enumFromInt(p.res.values.items.len);
     if (options.allocate) {
-        if (TRACE) trace("{s: <[1]}storeValue('{2s}') id {3}", .{ "", p.depth * 2, loc.src(p.tokenizer.src), id });
+        if (TRACE) trace("{s: <[1]}storeValue('{2s}') id {3}", .{ "", p.depth * 2, t.src(p.tokenizer.src), id });
         p.res.values.appendAssumeCapacity(v);
-        if (options.whitespace) p.res.whitespaces.appendAssumeCapacity(.{ loc.ws_start, loc.start });
+        if (options.preserve_whitespace) p.res.whitespaces.appendAssumeCapacity(.{ t.loc.ws_start, t.loc.start });
         p.res.siblings.appendAssumeCapacity(.null);
-        if (mparent) |parent| {
+        if (parent != .null) {
             const pv = p.res.items(.values, parent);
             switch (pv.*) {
                 inline .list, .vector, .set, .map => |_, tag| {
@@ -921,12 +916,13 @@ fn addValue(p: *Parser, loc: Token.Loc, v: Value, mparent: ?Value.Id, options: O
             }
         }
     } else {
-        p.res.values.items.len += 1;
-        p.res.whitespaces.items.len += 1;
-        p.res.siblings.items.len += 1;
+        const inc = @intFromBool(t.tag != .discard);
+        p.res.values.items.len += inc;
+        p.res.whitespaces.items.len += inc;
+        p.res.siblings.items.len += inc;
     }
 
-    if (options.whitespace) assert(p.res.values.items.len == p.res.whitespaces.items.len);
+    if (options.preserve_whitespace) assert(p.res.values.items.len == p.res.whitespaces.items.len);
     assert(p.res.values.items.len == p.res.siblings.items.len);
     return id;
 }
@@ -994,6 +990,7 @@ fn parseTagged(p: *Parser, t: Token, parent: Value.Id, options: Options) Error!V
 
     const t2 = p.tokenizer.next();
     const next_id, const next = try p.parseValue(t2, parent, options);
+    if (TRACE) trace("tagged {s} '{s}'\n", .{ @tagName(t2.tag), t2.src(p.tokenizer.src) });
     const v = if (p.handlers.get(t.src(p.tokenizer.src))) |handler| v: {
         const cur = p.tokenizer.peek();
         const v = try handler(
@@ -1014,11 +1011,11 @@ fn parseTagged(p: *Parser, t: Token, parent: Value.Id, options: Options) Error!V
 
 // TODO allow users to skip expensive parsing such as parsing integers
 pub fn userParseValue(p: *Parser, options: Options) !Value {
-    _, const val = try p.parseValue(p.tokenizer.next(), null, options);
+    _, const val = try p.parseValue(p.tokenizer.next(), .null, options);
     return val;
 }
 
-fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!struct { Value.Id, Value } {
+fn parseValue(p: *Parser, t: Token, parent: Value.Id, options: Options) Error!struct { Value.Id, Value } {
     return p.parseValueInner(t, parent, options) catch |e| {
         @branchHint(.cold);
         p.writeDiagnostic(e, if (p.tokenizer.index == 0) .{ .tag = .eof, .loc = std.mem.zeroes(Token.Loc) } else p.tokenizer.peek(), options);
@@ -1026,8 +1023,9 @@ fn parseValue(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!s
     };
 }
 
-fn parseValueInner(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Error!struct { Value.Id, Value } {
+fn parseValueInner(p: *Parser, t: Token, parent: Value.Id, options: Options) Error!struct { Value.Id, Value } {
     // std.debug.print("{s: <[1]}{2s}:\n  ws '{3s}'\n  content '{4s}'\n", .{ "", p.depth * 2, t.tag.lexeme(), p.tokenizer.src[t.loc.ws_start..t.loc.start], t.src(p.tokenizer.src) });
+    if (p.depth == 255) return error.Depth;
     if (TRACE) trace("{s: <[1]}parseValueInner('{2s}')", .{ "", p.depth * 2, t.src(p.tokenizer.src) });
     if (p.last_token.loc.end == t.loc.start and
         !t.tag.isClosing() and
@@ -1048,7 +1046,8 @@ fn parseValueInner(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Er
         .char => try p.parseChar(t),
         .discard => {
             const t2 = p.tokenizer.next();
-            _, const discard = try p.parseValue(t2, parent, options.with(.{ .store = false }));
+            if (t2.tag == .eof) return error.InvalidInput; // TODO should ')' here be unmatched delimiter error?
+            _, const discard = try p.parseValueInner(t2, parent, options.with(.{ .store = false }));
             // merge tokens. include discard in whitespace.
             const t3 = p.tokenizer.next();
             const tmerged: Token = .{ .tag = t3.tag, .loc = .{
@@ -1057,35 +1056,39 @@ fn parseValueInner(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Er
                 .end = t3.loc.end,
             } };
             p.last_token = tmerged;
-            if (TRACE) trace("{s: <[1]}discarded {2s} '{3s}' merged ws '{4s}'", .{ "", p.depth * 2, @tagName(discard), t2.src(p.tokenizer.src), p.tokenizer.src[tmerged.loc.ws_start..tmerged.loc.start] });
-            return try p.parseValue(tmerged, parent, options);
+            if (TRACE) trace("{s: <[1]}discarded {2s} '{3s}' merged ws '{4s}' '{5s}'", .{ "", p.depth * 2, @tagName(discard), t2.src(p.tokenizer.src), @tagName(tmerged.tag), p.tokenizer.src[tmerged.loc.ws_start..tmerged.loc.start] });
+            return try p.parseValueInner(tmerged, parent, options);
         },
         .tagged => {
-            const id = p.addValue(t.loc, .{ .tagged = undefined }, parent, options);
-            return .{ id, try p.parseTagged(t, id, options) };
+            const id = p.addValue(t, .{ .tagged = undefined }, parent, options);
+            const value = p.parseTagged(t, id, options) catch |e| switch (e) {
+                error.Eof, error.EndOfContainer => return error.InvalidInput,
+                else => return e,
+            };
+            return .{ id, value };
         },
         .keyword => .{ .keyword = t },
         .symbol => .{ .symbol = t },
         .lparen => {
-            const id = p.addValue(ws, .{ .list = .{} }, parent, options);
+            const id = p.addValue(.{ .tag = t.tag, .loc = ws }, .{ .list = .{} }, parent, options);
             const v = Value{ .list = try p.parseList(.rparen, &.{ .rbracket, .rcurly, .eof }, id, options) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .lbracket => {
-            const id = p.addValue(ws, .{ .vector = .{} }, parent, options);
+            const id = p.addValue(.{ .tag = t.tag, .loc = ws }, .{ .vector = .{} }, parent, options);
             const v = Value{ .vector = try p.parseList(.rbracket, &.{ .rparen, .rcurly, .eof }, id, options) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .set => {
-            const id = p.addValue(ws, .{ .set = .{} }, parent, options);
+            const id = p.addValue(.{ .tag = t.tag, .loc = ws }, .{ .set = .{} }, parent, options);
             const v = Value{ .set = try p.parseList(.rcurly, &.{ .rparen, .rbracket, .eof }, id, options) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
         },
         .lcurly => {
-            const id = p.addValue(ws, .{ .map = .{} }, parent, options);
+            const id = p.addValue(.{ .tag = t.tag, .loc = ws }, .{ .map = .{} }, parent, options);
             const v = Value{ .map = try p.parseList(.rcurly, &.{ .rparen, .rbracket, .eof }, id, options.with(.{ .stride = 2 })) };
             if (options.allocate) p.res.items(.values, id).* = v;
             return .{ id, v };
@@ -1096,7 +1099,9 @@ fn parseValueInner(p: *Parser, t: Token, parent: ?Value.Id, options: Options) Er
     };
 
     return .{
-        if (options.store) p.addValue(t.loc, value, parent, options) else @enumFromInt(p.res.values.items.len),
+        if (options.store) blk: {
+            break :blk p.addValue(t, value, parent, options);
+        } else @enumFromInt(p.res.values.items.len),
         value,
     };
 }
@@ -1163,11 +1168,11 @@ fn indent(writer: anytype, options: StringifyOptions, depth: u16) !void {
     try writer.writeByteNTimes(char, n_chars);
 }
 
-pub fn writeFromJson(v: std.json.Value, writer: anytype, options: StringifyOptions) !void {
-    try writeFromJsonInner(v, writer, options, 0);
+pub fn printFromJson(v: std.json.Value, writer: anytype, options: StringifyOptions) !void {
+    try printFromJsonInner(v, writer, options, 0);
 }
 
-fn writeFromJsonInner(v: std.json.Value, writer: anytype, options: StringifyOptions, depth: u16) !void {
+fn printFromJsonInner(v: std.json.Value, writer: anytype, options: StringifyOptions, depth: u16) !void {
     switch (v) {
         .string => |bytes| {
             try writer.writeAll("\"");
@@ -1197,7 +1202,7 @@ fn writeFromJsonInner(v: std.json.Value, writer: anytype, options: StringifyOpti
                 try writer.writeAll(":");
                 try writer.writeAll(k);
                 try writer.writeByte(' ');
-                try writeFromJsonInner(vv, writer, options, depth + 1);
+                try printFromJsonInner(vv, writer, options, depth + 1);
             }
             try indent(writer, options, depth);
             try writer.writeAll("}");
@@ -1207,7 +1212,7 @@ fn writeFromJsonInner(v: std.json.Value, writer: anytype, options: StringifyOpti
             for (a.items, 0..) |vv, i| {
                 if (i != 0) try writer.writeByte(' ');
                 try indent(writer, options, depth + 1);
-                try writeFromJsonInner(vv, writer, options, depth + 1);
+                try printFromJsonInner(vv, writer, options, depth + 1);
             }
             try indent(writer, options, depth);
             try writer.writeAll("]");
@@ -1227,78 +1232,6 @@ fn trace(comptime fmt: []const u8, args: anytype) void {
     } else {
         // log.debug(fmt, args);
         // std.debug.print(fmt ++ "\n", args);
-    }
-}
-
-fn fuzzOne(src: [:0]const u8) !void {
-    const talloc = std.testing.allocator;
-    const opts = Options{ .allocator = talloc, .error_on_extra_input = false };
-    {
-        const result = try parseFromSlice(Result, src, opts, .{});
-        defer result.deinit(talloc);
-        const src1 = try std.fmt.allocPrintZ(talloc, "{}", .{result.formatter(src)});
-        defer talloc.free(src1);
-    }
-    {
-        const result = try parseFromSlice(Result, src, opts.with(.{ .whitespace = false }), .{});
-        defer result.deinit(talloc);
-        const src1 = try std.fmt.allocPrintZ(talloc, "{}", .{result.formatter(src)});
-        defer talloc.free(src1);
-    }
-}
-
-// zig build test -Dtest-filters="fuzz parseFromSlice and format" --summary all --fuzz --port 38495
-test "fuzz parseFromSlice and format" {
-    const Context = struct {
-        f: std.fs.File,
-        log_to_file: bool = false,
-        fn testOne(c: @This(), input: []const u8) anyerror!void {
-            if (c.log_to_file) try c.f.writer().print("{s}\n\n", .{input});
-            fuzzOne(@ptrCast(input)) catch {
-                if (@import("builtin").is_test and !@import("builtin").fuzz) return;
-                // TODO log input to file
-                // std.debug.print("fuzzOne error: {s}\n", .{@errorName(e)});
-                // std.debug.print("{s}\n", .{input});
-                // std.debug.print("{any}\n", .{input});
-                return;
-            };
-        }
-    };
-    const corpus = [_][]const u8{
-        "a (a b c [1 2 3] {:a 1 :b 2})",
-        "{:a 1 :b 2}",
-        \\STR_ESC    #{\" \n \t \\ \r}
-        ,
-        \\KEYWORD    #statez/charset "[a-eg-mo-zA-Z0-9*+!_?%&=<>/.\\-]"
-        ,
-        \\\n       {\i {\l accept symbol_nil nil} symbol nil} ; TODO use #statez/stringset for these
-        \\\t       {\r {\u {\e accept symbol_true nil} symbol nil} symbol nil}
-        \\\f       {\a {\l {\s {\e accept symbol_false nil} symbol nil} symbol nil} symbol nil}
-        ,
-        \\{[1 2 3 4] "tell the people what she wore",
-        \\ [5 6 7 8] "the more you see the more you hate"}
-        ,
-        \\#{:a :b 88 "huat"}
-        ,
-        \\#MyYelpClone/MenuItem {:name "eggs-benedict" :rating 10}
-        ,
-        \\(defrecord MenuItem [name rating])
-        ,
-        \\(clojure.edn/read-string "{:eggs 2 :butter 1 :flour 5}")
-        ,
-        \\42
-        \\3.14159
-        ,
-        \\(:bun :beef-patty 9 "yum!")
-        ,
-    };
-    const log_to_file = false;
-    if (log_to_file) {
-        const dir = std.testing.tmpDir(.{});
-        const f = try dir.dir.createFile("log", .{});
-        try std.testing.fuzz(Context{ .f = f, .log_to_file = true }, Context.testOne, .{ .corpus = &corpus });
-    } else {
-        try std.testing.fuzz(Context{ .f = undefined }, Context.testOne, .{ .corpus = &corpus });
     }
 }
 

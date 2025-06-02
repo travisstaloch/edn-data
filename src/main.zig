@@ -38,7 +38,7 @@ fn mainInner() !void {
         defer alloc.free(src);
         const json = try std.json.parseFromSlice(std.json.Value, alloc, src, .{});
         defer json.deinit();
-        try edn.writeFromJson(json.value, stdout, .{ .whitespace = .indent_2 });
+        try edn.printFromJson(json.value, stdout, .{ .whitespace = .indent_2 });
         try stdout.writeAll("\n");
         try bw.flush();
         return;

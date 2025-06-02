@@ -78,14 +78,14 @@ test "comments" {
 fn testParse(alloc: std.mem.Allocator, src: [:0]const u8) !void {
     const opts = topts.with(.{ .allocator = alloc });
     try testParseOptions(src, opts);
-    try testParseOptions(src, opts.with(.{ .whitespace = false }));
+    try testParseOptions(src, opts.with(.{ .preserve_whitespace = false }));
 }
 
 fn testParseOptions(src: [:0]const u8, options: edn.Options) !void {
     std.debug.assert(topts.allocator != null);
     const result = try edn.parseFromSlice(edn.Result, src, options, .{});
     defer result.deinit(options.allocator.?);
-    if (false and options.whitespace) {
+    if (false and options.preserve_whitespace) {
         for (0..result.values.items.len) |i| {
             const ws = result.whitespaces.items[i];
             const v = result.values.items[i];
@@ -100,7 +100,7 @@ fn testParseOptions(src: [:0]const u8, options: edn.Options) !void {
     }
     const src1 = try std.fmt.allocPrintZ(options.allocator.?, "{}", .{result.formatter(src)});
     defer options.allocator.?.free(src1);
-    if (options.whitespace) {
+    if (options.preserve_whitespace) {
         try testing.expectEqualStrings(src, src1);
     }
     const result1 = edn.parseFromSlice(edn.Result, src1, options, .{}) catch |e| {
@@ -205,7 +205,7 @@ test "measure" {
 
 test "exclude whitespace" {
     const src = "a (a b c [] {:a :b :c :d})";
-    const res = try edn.parseFromSlice(edn.Result, src, topts.with(.{ .whitespace = false }), .{});
+    const res = try edn.parseFromSlice(edn.Result, src, topts.with(.{ .preserve_whitespace = false }), .{});
     defer res.deinit(talloc);
     try testing.expectFmt(src, "{}", .{res.formatter(src)});
 }
@@ -214,7 +214,7 @@ test "ParseResult find()" {
     const src =
         \\(a b c {:a 1, :b 2, "foo" 3, ns/sym 4, 5 10, \c 6})
     ;
-    const res = try edn.parseFromSlice(edn.Result, src, topts.with(.{ .whitespace = false }), .{});
+    const res = try edn.parseFromSlice(edn.Result, src, topts.with(.{ .preserve_whitespace = false }), .{});
     defer res.deinit(talloc);
     try testing.expectError(error.PathNotFound, res.find("1", src));
     try testing.expectError(error.PathNotFound, res.find("0//3//missing", src));
@@ -262,7 +262,7 @@ test "comptime parse" {
     inline for (test_srcs) |src_len| {
         const src = src_len[1];
         const fmt = comptime blk: {
-            const res = try edn.parseFromSliceComptime(src, .{ .whitespace = false }, .{ .eval_branch_quota = 32000 });
+            const res = try edn.parseFromSliceComptime(src, .{ .preserve_whitespace = false }, .{ .eval_branch_quota = 32000 });
             const final = std.fmt.comptimePrint("{}", .{res.formatter(src)});
             break :blk final[0..final.len].*;
         };
@@ -924,7 +924,7 @@ test "unclosed containers" {
 }
 
 test "tagged exclude ws format" {
-    try testParseOptions("(#a 1 #b 2)", topts.with(.{ .whitespace = false }));
+    try testParseOptions("(#a 1 #b 2)", topts.with(.{ .preserve_whitespace = false }));
 }
 fn debugAdverse(s: [:0]const u8) void {
     for (s) |c| {
@@ -935,13 +935,15 @@ fn debugAdverse(s: [:0]const u8) void {
 test "fuzz adverse cases" {
     // debugAdverse(&.{ 35, 77, 121, 89, 101, 108, 112, 67, 108, 111, 110, 101, 47, 77, 101, 110, 117, 73, 116, 101, 109, 125, 32, 123, 58, 110, 97, 109, 101, 32, 34, 101, 103, 115, 72, 45, 94, 101, 110, 43, 100, 105, 99, 108, 116, 34, 32, 58, 80, 97, 116, 105, 13, 103, 32, 49, 48, 125, 0 });
 
-    try testing.expectError(error.ExtraInput, testParseOptions(
+    try testing.expectError(error.InvalidInput, testParseOptions(
         \\ #MyYelpClone/MenuItem} {:name "egsH-^en+diclt" :Pati0dg 10}
     , topts));
-    var diag: edn.Diagnostic = .{};
-    try testParseOptions(
-        \\{:search_metadata {:completed_in 0.087 :max_id 505874924095815700 :max_id_str "505874924095815681" :next_results "?max_id=505874847260352512&q=%E4%B8%80&count=100&include_entities=1" :query "%E4%B8%80" :refresh_url "?since_id=505874924095815681&q=%E4%B8%80&include_entities=1" :count 100 :since_id 0 :since_id_str "0"}}
-    , topts.with(.{ .diagnostic = &diag }));
+    try testing.expectError(error.InvalidInput, testParseOptions(
+        \\; 1  2  3  4  5  6  7
+        \\  #b #_ #_
+        \\  1  2
+    , topts));
+    try testing.expectError(error.Depth, testParseOptions("(" ** 255, topts));
 }
 
 test "parseFromSlice demo with Diagnostic" {
@@ -972,7 +974,7 @@ test "parseFromSliceComptime demo" {
 
 test "parseFromSliceBuf demo - runtime no allocation" {
     const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
-    const shape = comptime try edn.measure(src, .{}, .{}); // src must be comptime known here
+    const shape = comptime try edn.measure(src, .{}, .{}); // src must be comptime known
     var arrays: shape.Arrays() = undefined;
     const result = try edn.parseFromSliceBuf(src, shape, arrays.buffers(), .{}, .{});
     try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
@@ -1001,4 +1003,108 @@ test "fuzz parseFromSlice(T)" {
         }
     };
     try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = &.{TestCase_src} });
+}
+
+fn fuzzOne(src: [:0]const u8, allocator: std.mem.Allocator) !void {
+    const opts = edn.Options{ .allocator = allocator };
+    {
+        const result = try edn.parseFromSlice(edn.Result, src, opts, .{});
+        defer result.deinit(allocator);
+        const src1 = try std.fmt.allocPrintZ(allocator, "{}", .{result.formatter(src)});
+        defer allocator.free(src1);
+    }
+    {
+        const result = try edn.parseFromSlice(edn.Result, src, opts.with(.{ .preserve_whitespace = false }), .{});
+        defer result.deinit(allocator);
+        const src1 = try std.fmt.allocPrintZ(allocator, "{}", .{result.formatter(src)});
+        defer allocator.free(src1);
+    }
+}
+
+// zig build test -Dtest-filters="fuzz parseFromSlice and format" --summary all --fuzz --port 38495
+test "fuzz parseFromSlice and format" {
+    const Context = struct {
+        f: std.fs.File,
+        log_to_file: bool = false,
+        fn testOne(c: @This(), input: []const u8) anyerror!void {
+            if (c.log_to_file) try c.f.writer().print("{s}\n\n", .{input});
+            fuzzOne(@ptrCast(input), talloc) catch {
+                if (@import("builtin").is_test and !@import("builtin").fuzz) return;
+                // TODO log input to file
+                // std.debug.print("fuzzOne error: {s}\n", .{@errorName(e)});
+                // std.debug.print("{s}\n", .{input});
+                // std.debug.print("{any}\n", .{input});
+                return;
+            };
+        }
+    };
+    const corpus = [_][]const u8{
+        "a (a b c [1 2 3] {:a 1 :b 2})",
+        "{:a 1 :b 2}",
+        \\STR_ESC    #{\" \n \t \\ \r}
+        ,
+        \\KEYWORD    #statez/charset "[a-eg-mo-zA-Z0-9*+!_?%&=<>/.\\-]"
+        ,
+        \\\n       {\i {\l accept symbol_nil nil} symbol nil} ; TODO use #statez/stringset for these
+        \\\t       {\r {\u {\e accept symbol_true nil} symbol nil} symbol nil}
+        \\\f       {\a {\l {\s {\e accept symbol_false nil} symbol nil} symbol nil} symbol nil}
+        ,
+        \\{[1 2 3 4] "tell the people what she wore",
+        \\ [5 6 7 8] "the more you see the more you hate"}
+        ,
+        \\#{:a :b 88 "huat"}
+        ,
+        \\#MyYelpClone/MenuItem {:name "eggs-benedict" :rating 10}
+        ,
+        \\(defrecord MenuItem [name rating])
+        ,
+        \\(clojure.edn/read-string "{:eggs 2 :butter 1 :flour 5}")
+        ,
+        \\42
+        \\3.14159
+        ,
+        \\(:bun :beef-patty 9 "yum!")
+        ,
+    };
+    const log_to_file = false;
+    if (log_to_file) {
+        const dir = std.testing.tmpDir(.{});
+        const f = try dir.dir.createFile("log", .{});
+        try std.testing.fuzz(Context{ .f = f, .log_to_file = true }, Context.testOne, .{ .corpus = &corpus });
+    } else {
+        try std.testing.fuzz(Context{ .f = undefined }, Context.testOne, .{ .corpus = &corpus });
+    }
+}
+
+fn cMain() callconv(.C) void {
+    main() catch unreachable;
+}
+
+comptime {
+    @export(&cMain, .{ .name = "main", .linkage = .strong });
+}
+
+pub fn main() !void {
+    var buf: [1024 * 1024 * 10]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const allocator = fba.allocator();
+
+    const stdin = std.io.getStdIn();
+    const src = try stdin.readToEndAllocOptions(allocator, std.math.maxInt(usize), null, 8, 0);
+    var diag: edn.Diagnostic = .{};
+    const opts = edn.Options{ .allocator = allocator, .diagnostic = &diag };
+    {
+        const result = edn.parseFromSlice(edn.Result, src, opts, .{}) catch {
+            std.debug.print("{s}", .{diag.error_message});
+            return;
+        };
+        _ = try std.fmt.allocPrintZ(allocator, "{}", .{result.formatter(src)});
+    }
+    {
+        const result = edn.parseFromSlice(edn.Result, src, opts.with(.{ .preserve_whitespace = false }), .{}) catch {
+            std.debug.print("{s}", .{diag.error_message});
+            return;
+        };
+        _ = try std.fmt.allocPrintZ(allocator, "{}", .{result.formatter(src)});
+    }
 }

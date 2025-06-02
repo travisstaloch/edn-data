@@ -48,7 +48,7 @@ fn mainInner() !void {
     const src = try file.readToEndAllocOptions(alloc, buf.len, null, 8, 0);
     var timer = try std.time.Timer.start();
     var diag: edn.Diagnostic = .{ .file_path = args[1] };
-    const result = edn.parseFromSlice(edn.Result, src, .{ .diagnostic = &diag, .allocator = alloc, .whitespace = false }, .{}) catch {
+    const result = edn.parseFromSlice(edn.Result, src, .{ .diagnostic = &diag, .allocator = alloc, .preserve_whitespace = false }, .{}) catch {
         try std.io.getStdErr().writer().print("{s}\n", .{diag.error_message});
         return;
     };
