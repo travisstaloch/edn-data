@@ -1076,21 +1076,25 @@ test "fuzz parseFromSlice and format" {
     }
 }
 
-fn cMain() callconv(.C) void {
-    main() catch unreachable;
-}
+// fn cMain() callconv(.C) void {
+//     main() catch unreachable;
+// }
 
-comptime {
-    @export(&cMain, .{ .name = "main", .linkage = .strong });
-}
+// comptime {
+//     @export(&cMain, .{ .name = "main", .linkage = .strong });
+// }
 
-pub fn main() !void {
-    var buf: [1024 * 1024 * 10]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const allocator = fba.allocator();
+// pub fn main() !void {
+//     var buf: [1024 * 1024 * 10]u8 = undefined;
+//     var fba = std.heap.FixedBufferAllocator.init(&buf);
+//     const allocator = fba.allocator();
 
-    const stdin = std.io.getStdIn();
-    const src = try stdin.readToEndAllocOptions(allocator, std.math.maxInt(usize), null, 8, 0);
+//     const stdin = std.io.getStdIn();
+//     const src = try stdin.readToEndAllocOptions(allocator, std.math.maxInt(usize), null, 8, 0);
+//     try fuzzInput(src, allocator);
+// }
+
+pub fn fuzzInput(src: [:0]const u8, allocator: std.mem.Allocator) !void {
     var diag: edn.Diagnostic = .{};
     const opts = edn.Options{ .allocator = allocator, .diagnostic = &diag };
     {
@@ -1107,4 +1111,14 @@ pub fn main() !void {
         };
         _ = try std.fmt.allocPrintZ(allocator, "{}", .{result.formatter(src)});
     }
+}
+
+export fn zig_fuzz_init() void {}
+
+export fn zig_fuzz_test(input: [*]u8, input_len: isize) void {
+    var buf: [1024 * 512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const allocator = fba.allocator();
+    input[@intCast(input_len)] = 0;
+    fuzzInput(input[0..@intCast(input_len) :0], allocator) catch unreachable;
 }

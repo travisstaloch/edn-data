@@ -1,7 +1,12 @@
 .{
     .name = .extensible_data_notation,
     .version = "0.0.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .zig_afl_kit = .{
+            .url = "git+https://github.com/kristoff-it/zig-afl-kit#68614a262c029986a3e8ff5e8dc3ed534ec92a7e",
+            .hash = "zig_afl_kit-0.1.0-3k74fQAdAAC3Dirqem0LWMirHM4UNqKEriGgVMAak9_5",
+        },
+    },
     .fingerprint = 0xc073000a8b4e19d6,
     .paths = .{
         "build.zig",

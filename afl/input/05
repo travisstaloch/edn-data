@@ -1,0 +1,3 @@
+\n       {\i {\l accept symbol_nil nil} symbol nil} ; TODO use #statez/stringset for these
+\t       {\r {\u {\e accept symbol_true nil} symbol nil} symbol nil}
+\f       {\a {\l {\s {\e accept symbol_false nil} symbol nil} symbol nil} symbol nil}

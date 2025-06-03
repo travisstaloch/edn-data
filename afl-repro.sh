@@ -2,7 +2,7 @@
 
 set -xe
 
-for i in $(find -wholename "./afl/output/default/crashes/*"); do
+for i in $(find -wholename "./afl/output/default/crashes*/id*"); do
   echo $i
   zig build run -- $i
   # zig-out/bin/edn-parse $i

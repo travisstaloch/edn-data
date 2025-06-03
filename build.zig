@@ -1,4 +1,5 @@
 const std = @import("std");
+const afl = @import("zig_afl_kit");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -46,18 +47,41 @@ pub fn build(b: *std.Build) void {
     bench.root_module.addImport("extensible-data-notation", mod);
     b.installArtifact(bench);
 
-    // fuzz
-    const fuzz = b.addStaticLibrary(.{
-        .name = "fuzz",
-        .root_source_file = b.path("src/tests.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    fuzz.root_module.addImport("extensible-data-notation", mod);
-    fuzz.bundle_compiler_rt = true;
-    fuzz.want_lto = true;
-    fuzz.pie = true;
-    b.installArtifact(fuzz);
+    // fuzz - slow.  from https://www.ryanliptak.com/blog/fuzzing-zig-code/
+    // const fuzz = b.addStaticLibrary(.{
+    //     .name = "fuzz",
+    //     .root_source_file = b.path("src/tests.zig"),
+    //     .target = target,
+    //     .optimize = optimize,
+    // });
+    // fuzz.root_module.addImport("extensible-data-notation", mod);
+    // fuzz.bundle_compiler_rt = true;
+    // fuzz.want_lto = true;
+    // fuzz.pie = true;
+    // b.installArtifact(fuzz);
+
+    // TODO remove this and instead use the fuzz step. <https://github.com/kristoff-it/zig-afl-kit/issues/8>
+    if (b.option(bool, "build-fuzz-exe", "Generate an instrumented executable for AFL++") orelse false) {
+        // Define a step for generating fuzzing tooling:
+        // const fuzz = b.step("fuzz", "Generate an instrumented executable for AFL++");
+
+        // Define an oblect file that contains your test function:
+        const afl_obj = b.addObject(.{
+            .name = "fuzz_obj",
+            .root_source_file = b.path("src/tests.zig"),
+            .target = target,
+            .optimize = .Debug,
+        });
+        afl_obj.root_module.fuzz = true;
+        afl_obj.root_module.addImport("extensible-data-notation", mod);
+        // Required options:
+        afl_obj.root_module.stack_check = false; // not linking with compiler-rt
+        afl_obj.root_module.link_libc = true;
+        // Generate an instrumented executable and install
+        const afl_fuzz: ?std.Build.LazyPath = afl.addInstrumentedExe(b, target, optimize, &.{}, true, afl_obj);
+        // fuzz.dependOn(&b.addInstallBinFile(afl_fuzz.?, "fuzz-afl").step);
+        b.getInstallStep().dependOn(&b.addInstallBinFile(afl_fuzz.?, "fuzz-afl").step);
+    }
 }
 
 fn addTest(file_path: []const u8, name: []const u8, b: *std.Build, target: anytype, optimize: anytype, filters: anytype, test_step: anytype, use_llvm: bool) !*std.Build.Step.Compile {

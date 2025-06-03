@@ -1,7 +1,11 @@
-zig build
+set -xe
 
-afl-clang-lto -o fuzz zig-out/lib/libfuzz.a
+zig build -Dbuild-fuzz-exe
 
-AFL_SKIP_CPUFREQ=true AFL_AUTORESUME=1 afl-fuzz -i afl/input -o afl/output -- ./fuzz
+#
+# previous compile and launch
+#
+# afl-clang-lto -o fuzz zig-out/lib/libfuzz.a
+# AFL_SKIP_CPUFREQ=true AFL_AUTORESUME=1 afl-fuzz -i afl/input -o afl/output -- ./fuzz
 
-# find -wholename "./afl/output/default/crashes/*" -exec sh -c "echo {}; zig-out/bin/edn-parse {}" \;
+AFL_AUTORESUME=1 afl-fuzz -t20 -i afl/input -o afl/output2 -- ./zig-out/bin/fuzz-afl

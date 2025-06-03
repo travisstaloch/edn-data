@@ -84,15 +84,19 @@ $ zig build test
 
 ##### Fuzzing
 ```console
-$ zig build test -Dtest-filters="fuzz parseFromSlice and format" --summary all --fuzz --port 38495
+$ nix-shell
+$ mkdir afl/output
+$ ./afl-fuzz.sh
 ```
 ```console
-$ zig build test -Dtest-filters="fuzz parseFromSlice(T)" --summary all --fuzz --port 38495
+$ zig build test -Dtest-filters="fuzz parseFromSlice and format" --summary all --fuzz --port 38495
 ```
 
 #### References
 * https://github.com/edn-format/edn
 * https://github.com/jorinvo/edn-data/blob/main/test/parse.test.ts
+* https://www.ryanliptak.com/blog/fuzzing-zig-code/
+* https://github.com/kristoff-it/zig-afl-kit
 
 #### Ideas and Planned Features
 - [ ] built-in tagged elements

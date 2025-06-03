@@ -1,0 +1,1 @@
+(clojure.edn/read-string "{:eggs 2 :butter 1 :flour 5}")
