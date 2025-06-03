@@ -908,10 +908,10 @@ fn addValue(p: *Parser, t: Token, v: Value, parent: Value.Id, options: Options) 
                     }
                 },
                 .tagged => {
-                    assert(!p.res.children.isSet(parent.int()));
-                    p.res.children.set(parent.int());
+                    // don't need to `p.res.children.set(parent.int())` here.
+                    // tagged elements don't use this info and this can cause
+                    // crashes on adverse inputs.
                 },
-
                 else => unreachable,
             }
         }
@@ -988,8 +988,13 @@ fn parseTagged(p: *Parser, t: Token, parent: Value.Id, options: Options) Error!V
     // to leading ws and fall back on default value parsing when
     // no handler is present.
 
+    p.depth += 1;
+    defer p.depth -= 1;
     const t2 = p.tokenizer.next();
-    const next_id, const next = try p.parseValue(t2, parent, options);
+    const next_id, const next = p.parseValue(t2, parent, options) catch |e| switch (e) {
+        error.Eof, error.EndOfContainer => return error.InvalidInput,
+        else => return e,
+    };
     if (TRACE) trace("tagged {s} '{s}'\n", .{ @tagName(t2.tag), t2.src(p.tokenizer.src) });
     const v = if (p.handlers.get(t.src(p.tokenizer.src))) |handler| v: {
         const cur = p.tokenizer.peek();
@@ -1046,17 +1051,24 @@ fn parseValueInner(p: *Parser, t: Token, parent: Value.Id, options: Options) Err
         .char => try p.parseChar(t),
         .discard => {
             const t2 = p.tokenizer.next();
-            if (t2.tag == .eof) return error.InvalidInput; // TODO should ')' here be unmatched delimiter error?
-            _, const discard = try p.parseValueInner(t2, parent, options.with(.{ .store = false }));
-            // merge tokens. include discard in whitespace.
-            const t3 = p.tokenizer.next();
-            const tmerged: Token = .{ .tag = t3.tag, .loc = .{
-                .ws_start = t.loc.ws_start,
-                .start = t3.loc.start,
-                .end = t3.loc.end,
-            } };
-            p.last_token = tmerged;
-            if (TRACE) trace("{s: <[1]}discarded {2s} '{3s}' merged ws '{4s}' '{5s}'", .{ "", p.depth * 2, @tagName(discard), t2.src(p.tokenizer.src), @tagName(tmerged.tag), p.tokenizer.src[tmerged.loc.ws_start..tmerged.loc.start] });
+            const tmerged = merged: {
+                p.depth += 1;
+                defer p.depth -= 1;
+                _, const discard = p.parseValueInner(t2, parent, options.with(.{ .store = false })) catch |e| switch (e) {
+                    error.Eof, error.EndOfContainer => return error.InvalidInput,
+                    else => return e,
+                };
+                // merge tokens. include discard in whitespace.
+                const t3 = p.tokenizer.next();
+                const tmerged: Token = .{ .tag = t3.tag, .loc = .{
+                    .ws_start = t.loc.ws_start,
+                    .start = t3.loc.start,
+                    .end = t3.loc.end,
+                } };
+                p.last_token = tmerged;
+                if (TRACE) trace("{s: <[1]}discarded {2s} '{3s}' merged ws '{4s}' '{5s}'", .{ "", p.depth * 2, @tagName(discard), t2.src(p.tokenizer.src), @tagName(tmerged.tag), p.tokenizer.src[tmerged.loc.ws_start..tmerged.loc.start] });
+                break :merged tmerged;
+            };
             return try p.parseValueInner(tmerged, parent, options);
         },
         .tagged => {
