@@ -179,7 +179,7 @@ pub const Value = union(Value.Tag) {
             };
     }
 
-    pub fn formatter(value: *const Value, src: [:0]const u8, result: Result) std.fmt.Formatter(formatValue) {
+    pub fn formatter(value: *const Value, src: [:0]const u8, result: Result) std.fmt.Formatter(Data, formatValue) {
         return .{ .data = .{ .value = value, .src = src, .result = result } };
     }
 
@@ -291,14 +291,14 @@ pub const Result = struct {
                         => |t| if (mem.eql(u8, component, t.src(src))) return v,
                         .integer => {
                             var buf: [std.math.log10(std.math.maxInt(i128)) + 1]u8 = undefined;
-                            const s = try std.fmt.bufPrint(&buf, "{}", .{k.formatter(src, r)});
+                            const s = try std.fmt.bufPrint(&buf, "{f}", .{k.formatter(src, r)});
                             if (mem.eql(u8, component, s)) {
                                 return v;
                             }
                         },
                         .character => {
                             var buf: [std.math.log(usize, 2, std.math.maxInt(u21)) + 1]u8 = undefined;
-                            const s = try std.fmt.bufPrint(&buf, "{}", .{k.formatter(src, r)});
+                            const s = try std.fmt.bufPrint(&buf, "{f}", .{k.formatter(src, r)});
                             if (mem.eql(u8, component, s)) {
                                 return v;
                             }
@@ -325,7 +325,8 @@ pub const Result = struct {
         return if (it.next() != null) error.PathNotFound else cur;
     }
 
-    pub fn formatter(result: Result, src: [:0]const u8) std.fmt.Formatter(formatParseResult) {
+    pub const Data = struct { result: Result, src: [:0]const u8 };
+    pub fn formatter(result: Result, src: [:0]const u8) std.fmt.Formatter(Result.Data, formatParseResult) {
         return .{ .data = .{ .src = src, .result = result } };
     }
 
@@ -415,8 +416,6 @@ pub const Buffers = struct {
 pub const Shape = struct {
     /// total number of values in Result
     capacity: u32 = 0,
-    /// total number of values found at top level
-    top_level_values: u32 = 0,
 
     pub inline fn Arrays(comptime s: Shape) type {
         const MaskInt = std.DynamicBitSetUnmanaged.MaskInt;
@@ -446,12 +445,11 @@ pub fn measure(
 ) !Shape {
     var p = try Parser.init(src, comptime_options.handlers);
     const opts = options.with(.{ .allocate = false });
-    const id = addValue(&p, .{ .tag = .lparen, .loc = .zero }, .{ .list = .{} }, .null, opts);
-    const list = try parseList(&p, .eof, &.{ .rparen, .rbracket, .rcurly }, id, opts);
+    const id = p.addValue(.{ .tag = .lparen, .loc = .zero }, .{ .list = .{} }, .null, opts);
+    _ = try p.parseList(.eof, &.{ .rparen, .rbracket, .rcurly }, id, opts);
     if (TRACE) trace("measure {}", .{p.res.values.items.len});
     return .{
         .capacity = @intCast(p.res.values.items.len),
-        .top_level_values = @intCast(list.len),
     };
 }
 
@@ -726,12 +724,7 @@ fn parseStruct(comptime T: type, p: *Parser, options: Options) !T {
     return t;
 }
 
-fn formatParseResult(
-    data: struct { src: [:0]const u8, result: Result },
-    comptime fmt: []const u8,
-    options: std.fmt.FormatOptions,
-    writer: anytype,
-) !void {
+fn formatParseResult(data: Result.Data, writer: *std.io.Writer) std.io.Writer.Error!void {
     if (data.result.values.items.len <= 1 or
         data.result.values.items[0] != .list or
         data.result.values.items[0].list.len == 0) return;
@@ -739,19 +732,14 @@ fn formatParseResult(
         .value = &data.result.values.items[0],
         .src = data.src,
         .result = data.result,
-    }, fmt, options, writer);
+    }, writer);
 }
 
+const Data = struct { value: *const Value, src: [:0]const u8, result: Result };
 fn formatValue(
-    data: struct {
-        value: *const Value,
-        src: [:0]const u8,
-        result: Result,
-    },
-    comptime fmt: []const u8,
-    options: std.fmt.FormatOptions,
-    writer: anytype,
-) !void {
+    data: Data,
+    writer: *std.io.Writer,
+) std.io.Writer.Error!void {
     const have_ws = data.result.whitespaces.items.len > 0;
     const index = data.value - data.result.values.items.ptr;
     // std.debug.print("{s} index {} data.value {*}\n", .{ @tagName(data.value.*), index, data.value });
@@ -784,7 +772,7 @@ fn formatValue(
             else
                 try writer.print("\\{u}", .{c}),
         },
-        .integer => |x| try std.fmt.formatType(x, fmt, options, writer, 0),
+        .integer => |x| try writer.printInt(x, 10, .lower, .{}),
         .tagged => |*tagged| {
             const src = tagged.tag.src(data.src);
             try writer.writeAll(src);
@@ -792,7 +780,7 @@ fn formatValue(
             if (!have_ws and (src.len == 0 or !std.ascii.isWhitespace(src[src.len - 1]))) {
                 try writer.writeByte(' ');
             }
-            try std.fmt.formatType(tagged.value.formatter(data.src, data.result), fmt, options, writer, 0);
+            try writer.print("{f}", .{tagged.value.formatter(data.src, data.result)});
         },
         inline .list, .vector, .set, .map => |l, tag| {
             // std.debug.print("{} {*} {*}\n", .{ index, data.value, data.result.values.items.ptr });
@@ -812,7 +800,7 @@ fn formatValue(
             while (iter.next()) |child_id| : (i += 1) {
                 const child = data.result.items(.values, child_id);
                 if (!have_ws and i > 0) try writer.writeByte(' ');
-                try std.fmt.formatType(child.formatter(data.src, data.result), fmt, options, writer, 0);
+                try writer.print("{f}", .{child.formatter(data.src, data.result)});
             }
             try writer.writeAll(data.src[l.trailing_ws[0]..l.trailing_ws[1]]);
         },
@@ -945,7 +933,7 @@ fn parseList(
     outer: while (true) : (list.len += 1) {
         for (0..options.stride) |_| {
             const t = p.tokenizer.next();
-            //if(include_debug) debug("{s: <[1]}parseList('{2s}') {3}", .{ "", p.depth * 2, t.src(p.tokenizer.src), t.tag });
+            // if (TRACE) trace("{s: <[1]}parseList('{2s}') {3}", .{ "", p.depth * 2, t.src(p.tokenizer.src), t.tag });
             if (t.tag == end_tag) {
                 list.trailing_ws = .{ t.loc.ws_start, t.loc.end };
                 p.last_token = t;
@@ -1162,7 +1150,7 @@ pub const StringifyOptions = struct {
     } = .minified,
 };
 
-fn indent(writer: anytype, options: StringifyOptions, depth: u16) !void {
+fn indent(writer: *std.Io.Writer, options: StringifyOptions, depth: u16) !void {
     var char: u8 = ' ';
     const n_chars = switch (options.whitespace) {
         .minified => return,
@@ -1177,14 +1165,14 @@ fn indent(writer: anytype, options: StringifyOptions, depth: u16) !void {
         },
     };
     try writer.writeByte('\n');
-    try writer.writeByteNTimes(char, n_chars);
+    try writer.splatByteAll(char, n_chars);
 }
 
 pub fn printFromJson(v: std.json.Value, writer: anytype, options: StringifyOptions) !void {
     try printFromJsonInner(v, writer, options, 0);
 }
 
-fn printFromJsonInner(v: std.json.Value, writer: anytype, options: StringifyOptions, depth: u16) !void {
+fn printFromJsonInner(v: std.json.Value, writer: *std.Io.Writer, options: StringifyOptions, depth: u16) !void {
     switch (v) {
         .string => |bytes| {
             try writer.writeAll("\"");
@@ -1199,11 +1187,8 @@ fn printFromJsonInner(v: std.json.Value, writer: anytype, options: StringifyOpti
             };
             try writer.writeAll("\"");
         },
-        .integer => |i| try std.fmt.formatInt(i, 10, .lower, .{}, writer),
-        .float => |f| {
-            var buf: [256]u8 = undefined; // TODO smaller?
-            try writer.writeAll(try std.fmt.formatFloat(&buf, f, .{ .mode = .decimal }));
-        },
+        .integer => |i| try writer.printInt(i, 10, .lower, .{}),
+        .float => |f| try writer.printFloat(f, .{ .mode = .decimal }),
         .bool => |b| try writer.writeAll(if (b) "true" else "false"),
         .null => try writer.writeAll("nil"),
         .object => |o| {

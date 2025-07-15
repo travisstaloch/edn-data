@@ -98,7 +98,7 @@ fn testParseOptions(src: [:0]const u8, options: edn.Options) !void {
             }
         }
     }
-    const src1 = try std.fmt.allocPrintZ(options.allocator.?, "{}", .{result.formatter(src)});
+    const src1 = try std.fmt.allocPrintSentinel(options.allocator.?, "{f}", .{result.formatter(src)}, 0);
     defer options.allocator.?.free(src1);
     if (options.preserve_whitespace) {
         try testing.expectEqualStrings(src, src1);
@@ -116,7 +116,7 @@ fn testParseOptions(src: [:0]const u8, options: edn.Options) !void {
 test "allocation failures" {
     const f = try std.fs.cwd().openFile("examples/edn.edn", .{});
     defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, 8, 0);
+    const src = try f.readToEndAllocOptions(talloc, 100000, null, .@"8", 0);
     defer talloc.free(src);
     try testParse(talloc, src);
     try testing.checkAllAllocationFailures(talloc, testParse, .{src});
@@ -137,8 +137,8 @@ fn testEql(asrc: [:0]const u8, bsrc: [:0]const u8, alen: u8, blen: u8) !void {
     }
     try testing.expect(ares.values.items[0].eql(asrc, ares, &bres.values.items[0], bsrc, bres));
 
-    try testing.expectFmt(asrc, "{}", .{ares.formatter(asrc)});
-    try testing.expectFmt(bsrc, "{}", .{bres.formatter(bsrc)});
+    try testing.expectFmt(asrc, "{f}", .{ares.formatter(asrc)});
+    try testing.expectFmt(bsrc, "{f}", .{bres.formatter(bsrc)});
 }
 
 fn testNotEql(asrc: [:0]const u8, bsrc: [:0]const u8, alen: u8, blen: u8) !void {
@@ -194,12 +194,10 @@ test "measure" {
     {
         const measured = try edn.measure("(a, b, c)", .{}, .{});
         try testing.expectEqual(5, measured.capacity);
-        try testing.expectEqual(1, measured.top_level_values);
     }
     {
         const measured = try edn.measure("( [a] {:a a} )", .{}, .{});
         try testing.expectEqual(7, measured.capacity);
-        try testing.expectEqual(1, measured.top_level_values);
     }
 }
 
@@ -207,7 +205,7 @@ test "exclude whitespace" {
     const src = "a (a b c [] {:a :b :c :d})";
     const res = try edn.parseFromSlice(edn.Result, src, topts.with(.{ .preserve_whitespace = false }), .{});
     defer res.deinit(talloc);
-    try testing.expectFmt(src, "{}", .{res.formatter(src)});
+    try testing.expectFmt(src, "{f}", .{res.formatter(src)});
 }
 
 test "ParseResult find()" {
@@ -262,8 +260,8 @@ test "comptime parse" {
     inline for (test_srcs) |src_len| {
         const src = src_len[1];
         const fmt = comptime blk: {
-            const res = try edn.parseFromSliceComptime(src, .{ .preserve_whitespace = false }, .{ .eval_branch_quota = 32000 });
-            const final = std.fmt.comptimePrint("{}", .{res.formatter(src)});
+            const res = try edn.parseFromSliceComptime(src, .{ .preserve_whitespace = false }, .{ .eval_branch_quota = 320000 });
+            const final = std.fmt.comptimePrint("{f}", .{res.formatter(src)});
             break :blk final[0..final.len].*;
         };
         try testing.expectEqualStrings(src, &fmt);
@@ -886,13 +884,13 @@ test "ednParse()" {
 test "Tokenizer.edn" {
     const f = try std.fs.cwd().openFile("examples/Tokenizer.edn", .{});
     defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, 8, 0);
+    const src = try f.readToEndAllocOptions(talloc, 100000, null, .@"8", 0);
     defer talloc.free(src);
     try testing.checkAllAllocationFailures(talloc, testParse, .{src});
 
     const result = try edn.parseFromSlice(edn.Result, src, topts, .{});
     defer result.deinit(talloc);
-    try testing.expectFmt(src, "{}", .{result.formatter(src)});
+    try testing.expectFmt(src, "{f}", .{result.formatter(src)});
 }
 
 test "unclosed containers" {
@@ -962,13 +960,13 @@ test "parseFromSlice demo with Diagnostic" {
     if (!@import("builtin").is_test) { // use format helper
         std.debug.print("{}\n", .{result.formatter(src)});
     }
-    try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
+    try std.testing.expectFmt(src, "{f}", .{result.formatter(src)});
 }
 
 test "parseFromSliceComptime demo" {
     const src = "{:eggs 2 :lemon-juice 3.5 :butter 1}";
     const result = comptime try edn.parseFromSliceComptime(src, .{}, .{ .eval_branch_quota = 2000 });
-    const src2 = std.fmt.comptimePrint("{}", .{comptime result.formatter(src)});
+    const src2 = std.fmt.comptimePrint("{f}", .{comptime result.formatter(src)});
     try std.testing.expectEqualStrings(src, src2);
 }
 
@@ -977,7 +975,7 @@ test "parseFromSliceBuf demo - runtime no allocation" {
     const shape = comptime try edn.measure(src, .{}, .{}); // src must be comptime known
     var arrays: shape.Arrays() = undefined;
     const result = try edn.parseFromSliceBuf(src, shape, arrays.buffers(), .{}, .{});
-    try std.testing.expectFmt(src, "{}", .{result.formatter(src)});
+    try std.testing.expectFmt(src, "{f}", .{result.formatter(src)});
 }
 
 // zig build test -Dtest-filters="fuzz parseFromSlice(T)" --summary all --fuzz --port 38495
@@ -1010,13 +1008,13 @@ fn fuzzOne(src: [:0]const u8, allocator: std.mem.Allocator) !void {
     {
         const result = try edn.parseFromSlice(edn.Result, src, opts, .{});
         defer result.deinit(allocator);
-        const src1 = try std.fmt.allocPrintZ(allocator, "{}", .{result.formatter(src)});
+        const src1 = try std.fmt.allocPrintSentinel(allocator, "{f}", .{result.formatter(src)}, 0);
         defer allocator.free(src1);
     }
     {
         const result = try edn.parseFromSlice(edn.Result, src, opts.with(.{ .preserve_whitespace = false }), .{});
         defer result.deinit(allocator);
-        const src1 = try std.fmt.allocPrintZ(allocator, "{}", .{result.formatter(src)});
+        const src1 = try std.fmt.allocPrintSentinel(allocator, "{f}", .{result.formatter(src)}, 0);
         defer allocator.free(src1);
     }
 }
@@ -1027,7 +1025,11 @@ test "fuzz parseFromSlice and format" {
         f: std.fs.File,
         log_to_file: bool = false,
         fn testOne(c: @This(), input: []const u8) anyerror!void {
-            if (c.log_to_file) try c.f.writer().print("{s}\n\n", .{input});
+            if (c.log_to_file) {
+                var buf: [std.heap.pageSize()]u8 = undefined;
+                var w = c.f.writer(&buf);
+                try w.interface.print("{s}\n\n", .{input});
+            }
             fuzzOne(@ptrCast(input), talloc) catch {
                 if (@import("builtin").is_test and !@import("builtin").fuzz) return;
                 // TODO log input to file
@@ -1102,14 +1104,14 @@ pub fn fuzzInput(src: [:0]const u8, allocator: std.mem.Allocator) !void {
             std.debug.print("{s}", .{diag.error_message});
             return;
         };
-        _ = try std.fmt.allocPrintZ(allocator, "{}", .{result.formatter(src)});
+        _ = try std.fmt.allocPrintSentinel(allocator, "{f}", .{result.formatter(src)}, 0);
     }
     {
         const result = edn.parseFromSlice(edn.Result, src, opts.with(.{ .preserve_whitespace = false }), .{}) catch {
             std.debug.print("{s}", .{diag.error_message});
             return;
         };
-        _ = try std.fmt.allocPrintZ(allocator, "{}", .{result.formatter(src)});
+        _ = try std.fmt.allocPrintSentinel(allocator, "{f}", .{result.formatter(src)}, 0);
     }
 }
 

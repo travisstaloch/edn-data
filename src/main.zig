@@ -27,33 +27,34 @@ fn mainInner() !void {
     defer std.process.argsFree(alloc, args);
 
     if (args.len < 2) return error.ArgsLen;
-    var bw = std.io.bufferedWriter(std.io.getStdOut().writer());
-    const stdout = bw.writer();
+    var buf: [std.heap.pageSize()]u8 = undefined;
+    var stdoutw = std.fs.File.stdout().writer(&buf);
+    const stdout = &stdoutw.interface;
 
     if (std.mem.eql(u8, args[1], "--json-to-edn")) {
         if (args.len < 3) return error.Args;
         const file = try std.fs.cwd().openFile(args[2], .{});
         defer file.close();
-        const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, 8, 0);
+        const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, .@"8", 0);
         defer alloc.free(src);
         const json = try std.json.parseFromSlice(std.json.Value, alloc, src, .{});
         defer json.deinit();
         try edn.printFromJson(json.value, stdout, .{ .whitespace = .indent_2 });
         try stdout.writeAll("\n");
-        try bw.flush();
+        try stdout.flush();
         return;
     }
 
-    const file = if (std.mem.eql(u8, args[1], "-")) std.io.getStdIn() else try std.fs.cwd().openFile(args[1], .{});
+    const file = if (std.mem.eql(u8, args[1], "-")) std.fs.File.stdin() else try std.fs.cwd().openFile(args[1], .{});
     defer file.close();
-    const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, 8, 0);
+    const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, .@"8", 0);
     defer alloc.free(src);
     var diag: edn.Diagnostic = .{ .file_path = args[1] };
     const result = edn.parseFromSlice(edn.Result, src, .{ .diagnostic = &diag, .allocator = alloc }, .{}) catch {
-        try std.io.getStdErr().writer().print("{s}\n", .{diag.error_message});
+        std.debug.print("{s}\n", .{diag.error_message});
         return;
     };
     defer result.deinit(alloc);
-    try stdout.print("{}\n", .{result.formatter(src)});
-    try bw.flush();
+    try stdout.print("{f}\n", .{result.formatter(src)});
+    try stdout.flush();
 }

@@ -3,9 +3,13 @@
     .version = "0.0.0",
     .dependencies = .{
         .zig_afl_kit = .{
-            .url = "git+https://github.com/kristoff-it/zig-afl-kit#68614a262c029986a3e8ff5e8dc3ed534ec92a7e",
-            .hash = "zig_afl_kit-0.1.0-3k74fQAdAAC3Dirqem0LWMirHM4UNqKEriGgVMAak9_5",
+            // TODO switch back to kristoff-it/zig-afl-kit if https://github.com/kristoff-it/zig-afl-kit/pull/9 is merged
+            .url = "git+https://github.com/travisstaloch/zig-afl-kit#877796341b3ce07fd6cbfc83bd84c2fffff17865",
+            .hash = "zig_afl_kit-0.1.0-3k74fZEcAADe-geyuhgq9ZtqjIjSy8fXqIyr-47PQ-KW",
         },
+        //.machine_scribe = .{
+        //    .path = "../machine_scribe",
+        //},
     },
     .fingerprint = 0xc073000a8b4e19d6,
     .paths = .{

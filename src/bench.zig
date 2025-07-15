@@ -35,23 +35,23 @@ fn mainInner() !void {
         if (args.len < 3) return error.Args;
         const file = try std.fs.cwd().openFile(args[2], .{});
         defer file.close();
-        const src = try file.readToEndAllocOptions(alloc, buf.len, null, 8, 0);
+        const src = try file.readToEndAllocOptions(alloc, buf.len, null, .@"8", 0);
         var timer = try std.time.Timer.start();
         const json = try std.json.parseFromSlice(std.json.Value, alloc, src, .{});
         std.mem.doNotOptimizeAway(json);
-        try std.io.getStdErr().writer().print("\nstd.json.parseFromSlice took {}\n", .{std.fmt.fmtDuration(timer.lap())});
+        std.debug.print("\nstd.json.parseFromSlice took {D}\n", .{timer.lap()});
         return;
     }
 
-    const file = if (std.mem.eql(u8, args[1], "-")) std.io.getStdIn() else try std.fs.cwd().openFile(args[1], .{});
+    const file = if (std.mem.eql(u8, args[1], "-")) std.fs.File.stdin() else try std.fs.cwd().openFile(args[1], .{});
     defer file.close();
-    const src = try file.readToEndAllocOptions(alloc, buf.len, null, 8, 0);
+    const src = try file.readToEndAllocOptions(alloc, buf.len, null, .@"8", 0);
     var timer = try std.time.Timer.start();
     var diag: edn.Diagnostic = .{ .file_path = args[1] };
     const result = edn.parseFromSlice(edn.Result, src, .{ .diagnostic = &diag, .allocator = alloc, .preserve_whitespace = false }, .{}) catch {
-        try std.io.getStdErr().writer().print("{s}\n", .{diag.error_message});
+        std.debug.print("{s}\n", .{diag.error_message});
         return;
     };
     std.mem.doNotOptimizeAway(result);
-    try std.io.getStdErr().writer().print("\nedn.parseFromSlice took {}\n", .{std.fmt.fmtDuration(timer.lap())});
+    std.debug.print("\nedn.parseFromSlice took {D}\n", .{timer.lap()});
 }
