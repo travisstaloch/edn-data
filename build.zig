@@ -64,23 +64,24 @@ pub fn build(b: *std.Build) !void {
     // fuzz.pie = true;
     // b.installArtifact(fuzz);
 
-    // a step for generating fuzzing tooling
-    // an oblect file that contains the test function
-    const afl_obj = b.addObject(.{
-        .name = "fuzz_obj",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests.zig"),
-            .target = target,
-            .optimize = .Debug,
-        }),
-    });
-    afl_obj.root_module.fuzz = true;
-    afl_obj.root_module.addImport("extensible-data-notation", mod);
-    // Required options:
-    afl_obj.root_module.stack_check = false; // not linking with compiler-rt
-    afl_obj.root_module.link_libc = true;
-    // Generate an instrumented executable and install.  but only when afl-cc is present.
-    if (afl.addInstrumentedExe(b, target, optimize, &.{}, true, afl_obj)) |afl_fuzz| {
+    if (b.option(bool, "build-fuzz-exe", "Generate an instrumented executable for AFL++") orelse false) {
+        // a step for generating fuzzing tooling
+        // an oblect file that contains the test function
+        const afl_obj = b.addObject(.{
+            .name = "fuzz_obj",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/tests.zig"),
+                .target = target,
+                .optimize = .Debug,
+            }),
+        });
+        afl_obj.root_module.fuzz = true;
+        afl_obj.root_module.addImport("extensible-data-notation", mod);
+        // Required options:
+        afl_obj.root_module.stack_check = false; // not linking with compiler-rt
+        afl_obj.root_module.link_libc = true;
+        // Generate an instrumented executable and install.  but only when afl-cc is present.
+        const afl_fuzz = afl.addInstrumentedExe(b, target, optimize, &.{}, true, afl_obj).?;
         b.getInstallStep().dependOn(&b.addInstallBinFile(afl_fuzz, "fuzz-afl").step);
     }
 }
