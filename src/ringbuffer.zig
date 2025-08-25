@@ -100,8 +100,8 @@ fn fuzzTestRb(T: type, comptime cap_log2: usize) !void {
     var rb: RingBuffer(T, cap_log2) = .init;
     const capacity = @TypeOf(rb).capacity;
 
-    var reference = std.ArrayList(T).init(testing.allocator);
-    defer reference.deinit();
+    var reference: std.ArrayList(T) = .empty;
+    defer reference.deinit(testing.allocator);
 
     var prng = std.Random.DefaultPrng.init(0);
     const random = prng.random();
@@ -113,7 +113,7 @@ fn fuzzTestRb(T: type, comptime cap_log2: usize) !void {
                 if (reference.items.len < capacity) {
                     const value = random.int(T);
                     try rb.push(value);
-                    try reference.append(value);
+                    try reference.append(testing.allocator, value);
 
                     try testing.expectEqual(reference.items.len, rb.len());
                     try testing.expect(!rb.empty());
@@ -159,7 +159,7 @@ fn fuzzTestRb(T: type, comptime cap_log2: usize) !void {
     // fill
     for (0..capacity) |j| {
         try rb.push(@truncate(j));
-        try reference.append(@truncate(j));
+        try reference.append(testing.allocator, @truncate(j));
     }
     // empty half
     for (0..capacity / 2) |_| {
@@ -170,7 +170,7 @@ fn fuzzTestRb(T: type, comptime cap_log2: usize) !void {
     for (0..capacity / 2) |j| {
         const value = @as(T, @truncate(j + 1000));
         try rb.push(value);
-        try reference.append(value);
+        try reference.append(testing.allocator, value);
     }
     // check all
     while (reference.items.len > 0) {

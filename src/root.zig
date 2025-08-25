@@ -290,7 +290,7 @@ pub const Result = struct {
                         .symbol,
                         => |t| if (mem.eql(u8, component, t.src(src))) return v,
                         .integer => {
-                            var buf: [std.math.log10(std.math.maxInt(i128)) + 1]u8 = undefined;
+                            var buf: [std.math.log10_int(@as(u128, std.math.maxInt(i128)))]u8 = undefined;
                             const s = try std.fmt.bufPrint(&buf, "{f}", .{k.formatter(src, r)});
                             if (mem.eql(u8, component, s)) {
                                 return v;
