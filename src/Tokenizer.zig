@@ -574,11 +574,6 @@ inline fn parseExpectations(args: anytype) []const Expectation {
 }
 
 test "edn.edn" {
-    const f = try std.fs.cwd().openFile("examples/edn.edn", .{});
-    defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, .@"8", 0);
-    defer talloc.free(src);
-
     const expectations = parseExpectations(.{ // zig fmt: off
         \\; Comments start with a semicolon.
         \\; Anything after the semicolon is ignored.

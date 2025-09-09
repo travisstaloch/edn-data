@@ -179,7 +179,7 @@ pub const Value = union(Value.Tag) {
             };
     }
 
-    pub fn formatter(value: *const Value, src: [:0]const u8, result: Result) std.fmt.Formatter(Data, formatValue) {
+    pub fn formatter(value: *const Value, src: [:0]const u8, result: Result) std.fmt.Alt(Data, formatValue) {
         return .{ .data = .{ .value = value, .src = src, .result = result } };
     }
 
@@ -326,7 +326,7 @@ pub const Result = struct {
     }
 
     pub const Data = struct { result: Result, src: [:0]const u8 };
-    pub fn formatter(result: Result, src: [:0]const u8) std.fmt.Formatter(Result.Data, formatParseResult) {
+    pub fn formatter(result: Result, src: [:0]const u8) std.fmt.Alt(Result.Data, formatParseResult) {
         return .{ .data = .{ .src = src, .result = result } };
     }
 
@@ -724,7 +724,7 @@ fn parseStruct(comptime T: type, p: *Parser, options: Options) !T {
     return t;
 }
 
-fn formatParseResult(data: Result.Data, writer: *std.io.Writer) std.io.Writer.Error!void {
+fn formatParseResult(data: Result.Data, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     if (data.result.values.items.len <= 1 or
         data.result.values.items[0] != .list or
         data.result.values.items[0].list.len == 0) return;
@@ -736,10 +736,8 @@ fn formatParseResult(data: Result.Data, writer: *std.io.Writer) std.io.Writer.Er
 }
 
 const Data = struct { value: *const Value, src: [:0]const u8, result: Result };
-fn formatValue(
-    data: Data,
-    writer: *std.io.Writer,
-) std.io.Writer.Error!void {
+
+fn formatValue(data: Data, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     const have_ws = data.result.whitespaces.items.len > 0;
     const index = data.value - data.result.values.items.ptr;
     // std.debug.print("{s} index {} data.value {*}\n", .{ @tagName(data.value.*), index, data.value });
@@ -1117,9 +1115,9 @@ fn writeDiagnostic(p: *const Parser, e: Error, t: Token, options: Options) void 
                 diag.column += 1;
             }
         }
-        var fbs = std.io.fixedBufferStream(&diag.error_message);
+        var fw: std.Io.Writer = .fixed(&diag.error_message);
         if (diag.file_path) |file_path| {
-            fbs.writer().print("error: {s}: {}:{} {s}. source '{s}'.\n", .{
+            fw.print("error: {s}: {}:{} {s}. source '{s}'.\n", .{
                 file_path,
                 diag.line,
                 diag.column,
@@ -1127,14 +1125,14 @@ fn writeDiagnostic(p: *const Parser, e: Error, t: Token, options: Options) void 
                 t.src(p.tokenizer.src),
             }) catch {};
         } else {
-            fbs.writer().print("error: {}:{} {s}. source '{s}'.\n", .{
+            fw.print("error: {}:{} {s}. source '{s}'.\n", .{
                 diag.line,
                 diag.column,
                 @errorName(e),
                 t.src(p.tokenizer.src),
             }) catch {};
         }
-        fbs.writer().writeByte(0) catch {};
+        fw.writeByte(0) catch {};
     }
 }
 

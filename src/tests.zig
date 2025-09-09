@@ -116,8 +116,15 @@ fn testParseOptions(src: [:0]const u8, options: edn.Options) !void {
 test "allocation failures" {
     const f = try std.fs.cwd().openFile("examples/edn.edn", .{});
     defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, .@"8", 0);
-    defer talloc.free(src);
+    var buf: [4096]u8 = undefined;
+    var freader = f.reader(&buf);
+    var aw: std.Io.Writer.Allocating = .init(talloc);
+    defer aw.deinit();
+    _ = try freader.interface.streamRemaining(&aw.writer);
+    try aw.writer.writeByte(0);
+    try aw.writer.flush();
+    const s = aw.written();
+    const src = s[0 .. s.len - 1 :0];
     try testParse(talloc, src);
     try testing.checkAllAllocationFailures(talloc, testParse, .{src});
 }
@@ -884,8 +891,14 @@ test "ednParse()" {
 test "Tokenizer.edn" {
     const f = try std.fs.cwd().openFile("examples/Tokenizer.edn", .{});
     defer f.close();
-    const src = try f.readToEndAllocOptions(talloc, 100000, null, .@"8", 0);
-    defer talloc.free(src);
+    var buf: [4096]u8 = undefined;
+    var freader = f.reader(&buf);
+    var aw: std.Io.Writer.Allocating = .init(talloc);
+    defer aw.deinit();
+    _ = try freader.interface.streamRemaining(&aw.writer);
+    try aw.writer.writeByte(0);
+    const s = aw.written();
+    const src = s[0 .. s.len - 1 :0];
     try testing.checkAllAllocationFailures(talloc, testParse, .{src});
 
     const result = try edn.parseFromSlice(edn.Result, src, topts, .{});
