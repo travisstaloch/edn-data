@@ -35,7 +35,8 @@ fn mainInner() !void {
         if (args.len < 3) return error.Args;
         const file = try std.fs.cwd().openFile(args[2], .{});
         defer file.close();
-        const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, .@"8", 0);
+        const src = try alloc.alloc(u8, try file.getEndPos());
+        std.debug.assert(src.len == try file.readAll(src));
         defer alloc.free(src);
         const json = try std.json.parseFromSlice(std.json.Value, alloc, src, .{});
         defer json.deinit();
@@ -47,7 +48,8 @@ fn mainInner() !void {
 
     const file = if (std.mem.eql(u8, args[1], "-")) std.fs.File.stdin() else try std.fs.cwd().openFile(args[1], .{});
     defer file.close();
-    const src = try file.readToEndAllocOptions(alloc, 1024 * 1024, null, .@"8", 0);
+    const src = try alloc.allocSentinel(u8, try file.getEndPos(), 0);
+    std.debug.assert(src.len == try file.readAll(src));
     defer alloc.free(src);
     var diag: edn.Diagnostic = .{ .file_path = args[1] };
     const result = edn.parseFromSlice(edn.Result, src, .{ .diagnostic = &diag, .allocator = alloc }, .{}) catch {
