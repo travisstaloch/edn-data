@@ -6,17 +6,20 @@ pub const std_options = std.Options{ .log_level = .warn };
 
 fn usage() void {
     std.debug.print(
-        \\usage <options?> <file>
+        \\usage: <options?> <input-file>
+        \\
+        \\  parse <input-file> and print formatted edn to stdout.
         \\
         \\options:
-        \\  --json-to-edn: convert json file to edn
+        \\  --json-to-edn: convert json <input-file> to edn
+        \\
         \\
     , .{});
 }
 
 pub fn main() !void {
     mainInner() catch |e| {
-        std.debug.print("{s}\n", .{@errorName(e)});
+        std.debug.print("\nerror: {s}\n\n", .{@errorName(e)});
         usage();
     };
 }
@@ -26,7 +29,7 @@ fn mainInner() !void {
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
 
-    if (args.len < 2) return error.ArgsLen;
+    if (args.len < 2) return error.MissingArgs;
     var buf: [std.heap.pageSize()]u8 = undefined;
     var stdoutw = std.fs.File.stdout().writer(&buf);
     const stdout = &stdoutw.interface;

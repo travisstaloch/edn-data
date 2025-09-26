@@ -21,6 +21,20 @@ This library provides both runtime and compile-time parsing capabilities for EDN
 * formatting
   * format parse results with `parse_result.formatter(src)`
 
+#### Tools
+```console
+$ zig-out/bin/edn-parse
+
+error: MissingArgs
+
+usage: <options?> <input-file>
+
+  parse <input-file> and print formatted edn to stdout.
+
+options:
+  --json-to-edn: convert json <input-file> to edn
+```
+
 #### Usage
 fetch with the package manager
 ```console
