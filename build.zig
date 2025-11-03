@@ -81,7 +81,7 @@ pub fn build(b: *std.Build) !void {
         afl_obj.root_module.stack_check = false; // not linking with compiler-rt
         afl_obj.root_module.link_libc = true;
         // Generate an instrumented executable and install.  but only when afl-cc is present.
-        const afl_fuzz = afl.addInstrumentedExe(b, target, optimize, &.{}, true, afl_obj).?;
+        const afl_fuzz = afl.addInstrumentedExe(b, target, optimize, null, true, afl_obj, &.{}).?;
         b.getInstallStep().dependOn(&b.addInstallBinFile(afl_fuzz, "fuzz-afl").step);
     }
 }

@@ -24,7 +24,6 @@ pub fn main() !void {
 }
 
 fn mainInner() !void {
-    // const buf = try std.heap.page_allocator.alloc(u8, 1024 * 1024 * 64);
     var buf: [1024 * 1024 * 10]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
     const alloc = fba.allocator();
@@ -33,21 +32,16 @@ fn mainInner() !void {
 
     if (std.mem.eql(u8, args[1], "--json")) {
         if (args.len < 3) return error.Args;
-        const file = try std.fs.cwd().openFile(args[2], .{});
-        defer file.close();
-        const src = try alloc.allocSentinel(u8, try file.getEndPos(), 0);
-        std.debug.assert(src.len == try file.readAll(src));
+        const src = try std.fs.cwd().readFileAlloc(args[2], alloc, .unlimited);
+        defer alloc.free(src);
         var timer = try std.time.Timer.start();
         const json = try std.json.parseFromSlice(std.json.Value, alloc, src, .{});
         std.mem.doNotOptimizeAway(json);
         std.debug.print("\nstd.json.parseFromSlice took {D}\n", .{timer.lap()});
         return;
     }
-
-    const file = if (std.mem.eql(u8, args[1], "-")) std.fs.File.stdin() else try std.fs.cwd().openFile(args[1], .{});
-    defer file.close();
-    const src = try alloc.allocSentinel(u8, try file.getEndPos(), 0);
-    std.debug.assert(src.len == try file.readAll(src));
+    if (std.mem.eql(u8, args[1], "-")) @panic("TODO support reading stdin");
+    const src = try std.fs.cwd().readFileAllocOptions(args[1], alloc, .unlimited, .fromByteUnits(1), 0);
     var timer = try std.time.Timer.start();
     var diag: edn.Diagnostic = .{ .file_path = args[1] };
     const result = edn.parseFromSlice(edn.Result, src, .{ .diagnostic = &diag, .allocator = alloc, .preserve_whitespace = false }, .{}) catch {

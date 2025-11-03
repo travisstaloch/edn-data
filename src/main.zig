@@ -25,9 +25,9 @@ pub fn main() !void {
 }
 
 fn mainInner() !void {
-    const alloc = std.heap.smp_allocator;
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    const gpa = std.heap.smp_allocator;
+    const args = try std.process.argsAlloc(gpa);
+    defer std.process.argsFree(gpa, args);
 
     if (args.len < 2) return error.MissingArgs;
     var buf: [std.heap.pageSize()]u8 = undefined;
@@ -36,12 +36,9 @@ fn mainInner() !void {
 
     if (std.mem.eql(u8, args[1], "--json-to-edn")) {
         if (args.len < 3) return error.Args;
-        const file = try std.fs.cwd().openFile(args[2], .{});
-        defer file.close();
-        const src = try alloc.alloc(u8, try file.getEndPos());
-        std.debug.assert(src.len == try file.readAll(src));
-        defer alloc.free(src);
-        const json = try std.json.parseFromSlice(std.json.Value, alloc, src, .{});
+        const src = try std.fs.cwd().readFileAlloc(args[2], gpa, .unlimited);
+        defer gpa.free(src);
+        const json = try std.json.parseFromSlice(std.json.Value, gpa, src, .{});
         defer json.deinit();
         try edn.printFromJson(json.value, stdout, .{ .whitespace = .indent_2 });
         try stdout.writeAll("\n");
@@ -49,17 +46,15 @@ fn mainInner() !void {
         return;
     }
 
-    const file = if (std.mem.eql(u8, args[1], "-")) std.fs.File.stdin() else try std.fs.cwd().openFile(args[1], .{});
-    defer file.close();
-    const src = try alloc.allocSentinel(u8, try file.getEndPos(), 0);
-    std.debug.assert(src.len == try file.readAll(src));
-    defer alloc.free(src);
+    if (std.mem.eql(u8, args[1], "-")) @panic("TODO support reading stdin");
+    const src = try std.fs.cwd().readFileAllocOptions(args[1], gpa, .unlimited, .fromByteUnits(1), 0);
+    defer gpa.free(src);
     var diag: edn.Diagnostic = .{ .file_path = args[1] };
-    const result = edn.parseFromSlice(edn.Result, src, .{ .diagnostic = &diag, .allocator = alloc }, .{}) catch {
+    const result = edn.parseFromSlice(edn.Result, src, .{ .diagnostic = &diag, .allocator = gpa }, .{}) catch {
         std.debug.print("{s}\n", .{diag.error_message});
         return;
     };
-    defer result.deinit(alloc);
+    defer result.deinit(gpa);
     try stdout.print("{f}\n", .{result.formatter(src)});
     try stdout.flush();
 }

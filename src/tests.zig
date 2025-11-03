@@ -117,7 +117,7 @@ test "allocation failures" {
     const f = try std.fs.cwd().openFile("examples/edn.edn", .{});
     defer f.close();
     var buf: [4096]u8 = undefined;
-    var freader = f.reader(&buf);
+    var freader = f.reader(std.testing.io, &buf);
     var aw: std.Io.Writer.Allocating = .init(talloc);
     defer aw.deinit();
     _ = try freader.interface.streamRemaining(&aw.writer);
@@ -892,7 +892,7 @@ test "Tokenizer.edn" {
     const f = try std.fs.cwd().openFile("examples/Tokenizer.edn", .{});
     defer f.close();
     var buf: [4096]u8 = undefined;
-    var freader = f.reader(&buf);
+    var freader = f.reader(std.testing.io, &buf);
     var aw: std.Io.Writer.Allocating = .init(talloc);
     defer aw.deinit();
     _ = try freader.interface.streamRemaining(&aw.writer);
